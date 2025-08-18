@@ -1,15 +1,18 @@
-// services/tradingServices.ts - FIXED VERSION
+// backend/src/services/tradingServices.ts - FIXED WITH EVENTEMITTER
+
 import Order, { IOrder, OrderType, OrderStatus, OrderService } from '../models/orderModel';
 import { Server as IOServer } from 'socket.io';
+import { EventEmitter } from 'events'; // 🆕 DODANO
 
 // Import the matching engine class, not the singleton
 import { OrderMatchingEngine } from './orderMatchingEngine';
 
-export class TradingService {
+export class TradingService extends EventEmitter { // 🆕 EXTENDS EVENTEMITTER
   private io: IOServer | null = null;
   private matchingEngine: OrderMatchingEngine;
 
   constructor() {
+    super(); // 🆕 POZOVI SUPER()
     // Create the matching engine instance here
     this.matchingEngine = new OrderMatchingEngine();
     this.setupEventListeners();
@@ -28,6 +31,9 @@ export class TradingService {
   private setupEventListeners(): void {
     this.matchingEngine.on('tradesExecuted', (trades) => {
       console.log(`📈 ${trades.length} trades executed`);
+      
+      // 🆕 EMIT CUSTOM EVENT
+      this.emit('tradesExecuted', trades);
       
       // Emit to all connected clients
       if (this.io) {
@@ -54,6 +60,10 @@ export class TradingService {
 
     this.matchingEngine.on('orderFilled', (order, trades = []) => {
       console.log(`✅ Order ${order.no} filled`);
+      
+      // 🆕 EMIT CUSTOM EVENT
+      this.emit('orderFilled', order, trades);
+      
       if (this.io) {
         this.io.emit(`order_update_${order._id}`, {
           orderId: order._id,
@@ -66,6 +76,10 @@ export class TradingService {
 
     this.matchingEngine.on('orderPartiallyFilled', (order, trades) => {
       console.log(`🔄 Order ${order.no} partially filled`);
+      
+      // 🆕 EMIT CUSTOM EVENT
+      this.emit('orderPartiallyFilled', order, trades);
+      
       if (this.io) {
         this.io.emit(`order_update_${order._id}`, {
           orderId: order._id,
@@ -78,87 +92,79 @@ export class TradingService {
 
     this.matchingEngine.on('orderAddedToBook', (order) => {
       console.log(`📝 Order ${order.no} added to book`);
+      
+      // 🆕 EMIT CUSTOM EVENT
+      this.emit('orderAddedToBook', order);
+      
       if (this.io) {
         // Emit updated order book
         const orderBook = this.matchingEngine.getOrderBook(order.pair);
-        this.io.emit(`orderbook_${order.pair}`, orderBook);
+        this.io.emit(`orderbook_update_${order.pair}`, orderBook);
       }
     });
 
-    this.matchingEngine.on('orderCancelled', (orderId, pair) => {
-      console.log(`❌ Order ${orderId} cancelled from ${pair}`);
-      if (this.io) {
-        this.io.emit(`order_update_${orderId}`, {
-          orderId: orderId,
-          status: 'cancelled'
-        });
-        
-        // Emit updated order book
-        const orderBook = this.matchingEngine.getOrderBook(pair);
-        this.io.emit(`orderbook_${pair}`, orderBook);
-      }
+    // 🆕 DODAJ NOVI EVENT ZA ORDER MATCHING
+    this.matchingEngine.on('orderMatched', (buyOrder: IOrder, sellOrder: IOrder, trades: any[]) => {
+      console.log(`🎯 Orders matched: ${buyOrder._id} ↔ ${sellOrder._id}`);
+      
+      // Emit custom event for server.ts
+      this.emit('orderMatched', buyOrder, sellOrder, trades);
     });
   }
 
   /**
-   * Create and process a new order
+   * Place a new order
    */
-  async createOrder(orderData: Partial<IOrder>): Promise<{
-    order: IOrder,
-    trades: any[],
-    success: boolean,
-    message: string
-  }> {
+  async placeOrder(orderData: any): Promise<{ success: boolean; message: string; data?: any }> {
     try {
-      // Create the order in database first
+      console.log(`📝 Placing order: ${orderData.pair} ${orderData.side} ${orderData.amount}@${orderData.price}`);
+      
+      // Create order in database first
       const order = await OrderService.createOrder(orderData);
       
-      // Process through matching engine
+      // Process order through matching engine
       const result = await this.matchingEngine.processOrder(order);
       
+      console.log(`✅ Order ${order.no} placed successfully`);
+      
       return {
-        order: result.remainingOrder || order,
-        trades: result.trades,
         success: true,
-        message: result.trades.length > 0 
-          ? `Order created and ${result.trades.length} trades executed`
-          : 'Order created and added to book'
+        message: 'Order placed successfully',
+        data: {
+          orderId: order._id,
+          orderNo: order.no,
+          trades: result.trades,
+          remainingOrder: result.remainingOrder
+        }
       };
     } catch (error: any) {
-      console.error('❌ Error creating order:', error);
-      return {
-        order: null as any,
-        trades: [],
-        success: false,
-        message: error.message || 'Failed to create order'
-      };
+      console.error('❌ Error placing order:', error);
+      return { success: false, message: error.message || 'Failed to place order' };
     }
   }
 
   /**
    * Cancel an order
    */
-  async cancelOrder(orderId: string): Promise<{ success: boolean, message: string }> {
+  async cancelOrder(orderId: string, pair: string): Promise<{ success: boolean; message: string }> {
     try {
-      const order = await Order.findById(orderId);
-      if (!order) {
-        return { success: false, message: 'Order not found' };
-      }
-
-      if (order.status !== OrderStatus.PENDING) {
-        return { success: false, message: 'Can only cancel pending orders' };
-      }
-
-      // Remove from matching engine
-      const removed = await this.matchingEngine.cancelOrder(orderId, order.pair);
+      console.log(`❌ Cancelling order: ${orderId} for ${pair}`);
       
-      // Update database
-      await order.cancel();
-
-      return {
-        success: true,
-        message: removed ? 'Order cancelled and removed from book' : 'Order cancelled'
-      };
+      // Remove from matching engine
+      const removed = await this.matchingEngine.cancelOrder(orderId, pair);
+      
+      if (removed) {
+        // Update order status in database
+        const order = await Order.findById(orderId);
+        if (order) {
+          await order.cancel();
+        }
+        
+        console.log(`✅ Order ${orderId} cancelled successfully`);
+        return { success: true, message: 'Order cancelled successfully' };
+      } else {
+        return { success: false, message: 'Order not found or already executed' };
+      }
     } catch (error: any) {
       console.error('❌ Error cancelling order:', error);
       return { success: false, message: error.message || 'Failed to cancel order' };
@@ -200,8 +206,12 @@ export class TradingService {
     try {
       await this.matchingEngine.initializeOrderBooks();
       console.log('🚀 Trading service initialized');
+      
+      // 🆕 EMIT INITIALIZATION EVENT
+      this.emit('initialized');
     } catch (error) {
       console.error('❌ Failed to initialize trading service:', error);
+      this.emit('error', error);
       throw error;
     }
   }
@@ -211,161 +221,61 @@ export class TradingService {
    */
   cleanup(): void {
     this.matchingEngine.cleanupOldTrades();
+    console.log('🧹 Trading service cleanup completed');
+    
+    // 🆕 EMIT CLEANUP EVENT
+    this.emit('cleanup');
+  }
+
+  /**
+   * Get service statistics
+   */
+  getStats() {
+    const activePairs = this.getActivePairs();
+    const stats = {
+      activePairs: activePairs.length,
+      pairsList: activePairs,
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString()
+    };
+    
+    return stats;
+  }
+
+  /**
+   * Health check
+   */
+  healthCheck() {
+    return {
+      healthy: true,
+      matchingEngine: !!this.matchingEngine,
+      socketIO: !!this.io,
+      activePairs: this.getActivePairs().length,
+      timestamp: new Date().toISOString()
+    };
   }
 }
 
 // Singleton instance
 export const tradingService = new TradingService();
 
-// Updated OrderController methods to use matching engine
-export const EnhancedOrderController = {
-  // Enhanced create order method
-  async createOrder(req: any, res: any, next: any) {
-    try {
-      const { validationResult } = require('express-validator');
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          message: 'Validation errors',
-          errors: errors.array()
-        });
-      }
-
-      const result = await tradingService.createOrder(req.body);
-
-      if (!result.success) {
-        return res.status(400).json({
-          success: false,
-          message: result.message
-        });
-      }
-
-      res.status(201).json({
-        success: true,
-        data: {
-          order: result.order,
-          trades: result.trades,
-          tradesExecuted: result.trades.length
-        },
-        message: result.message
-      });
-    } catch (error) {
-      next(error);
-    }
-  },
-
-  // Enhanced cancel order method
-  async cancelOrder(req: any, res: any, next: any) {
-    try {
-      const { id } = req.params;
-      
-      const result = await tradingService.cancelOrder(id);
-
-      if (!result.success) {
-        return res.status(400).json({
-          success: false,
-          message: result.message
-        });
-      }
-
-      res.status(200).json({
-        success: true,
-        message: result.message
-      });
-    } catch (error) {
-      next(error);
-    }
-  },
-
-  // Get order book
-  async getOrderBook(req: any, res: any, next: any) {
-    try {
-      const { pair } = req.params;
-      const orderBook = tradingService.getOrderBook(pair);
-      
-      if (!orderBook) {
-        return res.status(404).json({
-          success: false,
-          message: 'Order book not found for this pair'
-        });
-      }
-
-      res.status(200).json({
-        success: true,
-        data: {
-          pair: pair.toUpperCase(),
-          timestamp: new Date(),
-          bids: orderBook.bids.map(entry => ({
-            price: entry.price,
-            amount: entry.amount,
-            total: entry.price * entry.amount
-          })),
-          asks: orderBook.asks.map(entry => ({
-            price: entry.price,
-            amount: entry.amount,
-            total: entry.price * entry.amount
-          }))
-        }
-      });
-    } catch (error) {
-      next(error);
-    }
-  },
-
-  // Get recent trades
-  async getRecentTrades(req: any, res: any, next: any) {
-    try {
-      const { pair } = req.params;
-      const { limit } = req.query;
-      const trades = tradingService.getRecentTrades(pair, parseInt(limit as string) || 50);
-
-      res.status(200).json({
-        success: true,
-        data: {
-          pair: pair.toUpperCase(),
-          trades: trades,
-          count: trades.length
-        }
-      });
-    } catch (error) {
-      next(error);
-    }
-  },
-
-  // Get market data
-  async getMarketData(req: any, res: any, next: any) {
-    try {
-      const { pair } = req.params;
-      const marketData = tradingService.getMarketData(pair);
-
-      res.status(200).json({
-        success: true,
-        data: marketData
-      });
-    } catch (error) {
-      next(error);
-    }
-  },
-
-  // Get all active pairs
-  async getActivePairs(req: any, res: any, next: any) {
-    try {
-      const pairs = tradingService.getActivePairs();
-      const marketDataPromises = pairs.map(pair => ({
-        pair,
-        ...tradingService.getMarketData(pair)
-      }));
-
-      res.status(200).json({
-        success: true,
-        data: {
-          pairs: marketDataPromises,
-          count: pairs.length
-        }
-      });
-    } catch (error) {
-      next(error);
-    }
-  }
-};
+// 🆕 DODAJ TYPE DEFINITIONS ZA EVENTS
+declare interface TradingService {
+  on(event: 'tradesExecuted', listener: (trades: any[]) => void): this;
+  on(event: 'orderFilled', listener: (order: IOrder, trades: any[]) => void): this;
+  on(event: 'orderPartiallyFilled', listener: (order: IOrder, trades: any[]) => void): this;
+  on(event: 'orderAddedToBook', listener: (order: IOrder) => void): this;
+  on(event: 'orderMatched', listener: (buyOrder: IOrder, sellOrder: IOrder, trades: any[]) => void): this;
+  on(event: 'initialized', listener: () => void): this;
+  on(event: 'cleanup', listener: () => void): this;
+  on(event: 'error', listener: (error: Error) => void): this;
+  
+  emit(event: 'tradesExecuted', trades: any[]): boolean;
+  emit(event: 'orderFilled', order: IOrder, trades: any[]): boolean;
+  emit(event: 'orderPartiallyFilled', order: IOrder, trades: any[]): boolean;
+  emit(event: 'orderAddedToBook', order: IOrder): boolean;
+  emit(event: 'orderMatched', buyOrder: IOrder, sellOrder: IOrder, trades: any[]): boolean;
+  emit(event: 'initialized'): boolean;
+  emit(event: 'cleanup'): boolean;
+  emit(event: 'error', error: Error): boolean;
+}
