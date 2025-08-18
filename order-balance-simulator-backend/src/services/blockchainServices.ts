@@ -1,153 +1,278 @@
-// backend/src/services/blockchainService.ts - MOCK MODE FIX
+// order-balance-simulator-backend/src/services/blockchainServices.ts
 
-import { ethers, Contract, Wallet } from 'ethers';
+import { ethers } from 'ethers';
+import dotenv from 'dotenv';
+import path from 'path';
 
-interface BlockchainConfig {
-  rpcUrl: string;
-  privateKey: string;
-  contractAddress: string;
-  networkId: number;
-  gasLimit: number;
-  mockMode: boolean; // 🆕 DODANO
-}
+// Load environment variables
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
+// Jednostavan ABI za naš contract
+const DEX_ABI = [
+  "function executeTrade(string memory _tradeId, address _buyer, address _seller, uint256 _amount, uint256 _price) external",
+  "function getTrade(string memory _tradeId) external view returns (tuple(string tradeId, address buyer, address seller, uint256 amount, uint256 price, uint256 timestamp, bool executed))",
+  "function totalTradesExecuted() external view returns (uint256)",
+  "event TradeExecuted(string indexed tradeId, address indexed buyer, address indexed seller, uint256 amount, uint256 price, uint256 timestamp)"
+];
+
+// Types
 interface TransactionResult {
   success: boolean;
   txHash?: string;
   blockNumber?: number;
-  gasUsed?: number;
+  gasUsed?: string;
   error?: string;
 }
 
-export class BlockchainService {
+interface BlockchainEvent {
+  type: string;
+  data: any;
+}
+
+class BlockchainService {
   private provider: ethers.JsonRpcProvider | null = null;
-  private wallet: Wallet | null = null;
-  private dexContract: Contract | null = null;
-  private config: BlockchainConfig;
-  private isInitialized: boolean = false;
-  private mockMode: boolean;
+  private wallet: ethers.Wallet | null = null;
+  private contract: ethers.Contract | null = null;
+  private isInitialized = false;
+  private mockMode = false;
+  private eventCallbacks: ((event: BlockchainEvent) => void)[] = [];
 
-  constructor(config: BlockchainConfig) {
-    this.config = config;
-    this.mockMode = config.mockMode || this.isInvalidPrivateKey(config.privateKey);
-    
-    if (this.mockMode) {
-      console.log('🎭 Blockchain service running in MOCK MODE');
-    }
-  }
-
-  /**
-   * Check if private key is invalid/placeholder
-   */
-  private isInvalidPrivateKey(privateKey: string): boolean {
-    return !privateKey || 
-           privateKey === '0x0000000000000000000000000000000000000000000000000000000000000000' ||
-           privateKey.length !== 66 ||
-           !privateKey.startsWith('0x');
-  }
-
-  /**
-   * Initialize blockchain service
-   */
-  async initialize(): Promise<void> {
+  async initialize() {
     try {
-      if (this.mockMode) {
-        console.log('✅ Blockchain service initialized in MOCK MODE');
+      console.log('🔄 Initializing blockchain service...');
+      
+      // Check if we should use mock mode
+      if (process.env.BLOCKCHAIN_MOCK_MODE === 'true') {
+        console.log('🎭 Blockchain service running in MOCK MODE');
+        this.mockMode = true;
         this.isInitialized = true;
         return;
       }
-
-      // Real blockchain initialization
-      this.provider = new ethers.JsonRpcProvider(this.config.rpcUrl);
-      this.wallet = new ethers.Wallet(this.config.privateKey, this.provider);
+      
+      // Konektuj se na lokalni Hardhat node
+      const rpcUrl = process.env.BLOCKCHAIN_RPC_URL || 'http://127.0.0.1:8545';
+      console.log(`📡 Connecting to RPC: ${rpcUrl}`);
+      
+      this.provider = new ethers.JsonRpcProvider(rpcUrl);
       
       // Test connection
-      const network = await this.provider.getNetwork();
-      const balance = await this.wallet.provider?.getBalance(this.wallet.address);
+      try {
+        const network = await this.provider.getNetwork();
+        console.log(`🌐 Connected to network: ${network.name} (chainId: ${network.chainId})`);
+      } catch (error) {
+        console.log('⚠️ Cannot connect to blockchain, using MOCK MODE');
+        this.mockMode = true;
+        this.isInitialized = true;
+        return;
+      }
       
-      console.log(`🔗 Blockchain service initialized:`);
-      console.log(`   Network: ${network.name} (${network.chainId})`);
-      console.log(`   Wallet: ${this.wallet.address}`);
-      console.log(`   Balance: ${ethers.formatEther(balance || 0)} ETH`);
-
+      // Kreiraj wallet sa private key iz .env
+      const privateKey = process.env.BACKEND_WALLET_PRIVATE_KEY;
+      if (!privateKey) {
+        console.log('⚠️ No private key configured, using MOCK MODE');
+        this.mockMode = true;
+        this.isInitialized = true;
+        return;
+      }
+      
+      this.wallet = new ethers.Wallet(privateKey, this.provider);
+      console.log(`👛 Wallet address: ${this.wallet.address}`);
+      
+      // Konektuj se na smart contract
+      const contractAddress = process.env.DEX_CONTRACT_ADDRESS;
+      if (contractAddress && contractAddress !== '') {
+        this.contract = new ethers.Contract(
+          contractAddress,
+          DEX_ABI,
+          this.wallet
+        );
+        
+        console.log('📄 Connected to contract:', contractAddress);
+        
+        // Proveri da li radi
+        try {
+          const totalTrades = await this.contract.totalTradesExecuted();
+          console.log('📊 Total trades executed on-chain:', totalTrades.toString());
+        } catch (error) {
+          console.error('⚠️ Contract call failed:', error);
+        }
+      } else {
+        console.log('⚠️ No contract address configured');
+        this.mockMode = true;
+      }
+      
+      // Check wallet balance
+      const balance = await this.provider.getBalance(this.wallet.address);
+      console.log('💰 Wallet balance:', ethers.formatEther(balance), 'ETH');
+      
       this.isInitialized = true;
-      console.log('✅ Blockchain service ready');
-
+      console.log('✅ Blockchain service initialized successfully');
+      
     } catch (error) {
-      console.error('❌ Failed to initialize blockchain service:', error);
-      console.log('🎭 Falling back to MOCK MODE');
+      console.error('❌ Blockchain init failed:', error);
+      console.log('📌 Running in MOCK MODE');
       this.mockMode = true;
       this.isInitialized = true;
     }
   }
 
-  /**
-   * Execute matched trade on blockchain
-   */
-  async executeTradeOnChain(trade: any): Promise<TransactionResult> {
+  async executeTradeOnChain(tradeData: any): Promise<TransactionResult> {
     if (!this.isInitialized) {
-      throw new Error('Blockchain service not initialized');
+      console.log('⚠️ Blockchain service not initialized');
+      return {
+        success: false,
+        error: 'Blockchain service not initialized'
+      };
     }
 
-    if (this.mockMode) {
-      console.log(`🎭 MOCK: Executing trade on-chain: ${trade.tradeId}`);
+    if (this.mockMode || !this.contract) {
+      console.log(`🎭 MOCK: Would execute trade on-chain: ${tradeData.tradeId}`);
       
       // Simulate processing time
       await new Promise(resolve => setTimeout(resolve, 1000));
       
+      const mockTxHash = '0x' + Math.random().toString(16).slice(2).padStart(64, '0');
+      console.log(`🎭 MOCK: Trade executed with tx: ${mockTxHash}`);
+      
       return {
         success: true,
-        txHash: `0x${Math.random().toString(16).slice(2).padStart(64, '0')}`,
+        txHash: mockTxHash,
         blockNumber: Math.floor(Math.random() * 1000000) + 18000000,
-        gasUsed: Math.floor(Math.random() * 100000) + 21000
+        gasUsed: '50000'
       };
     }
 
     try {
-      // Real blockchain execution would go here
-      console.log(`🔗 Executing trade on-chain: ${trade.tradeId}`);
+      console.log(`📝 Executing trade on blockchain: ${tradeData.tradeId}`);
+      console.log(`   Buyer: ${tradeData.buyerAddress || 'N/A'}`);
+      console.log(`   Seller: ${tradeData.sellerAddress || 'N/A'}`);
+      console.log(`   Amount: ${tradeData.amount}`);
+      console.log(`   Price: ${tradeData.price}`);
       
-      // For now, return mock response
+      // Execute trade on smart contract
+      const tx = await this.contract.executeTrade(
+        tradeData.tradeId,
+        tradeData.buyerAddress || ethers.ZeroAddress,
+        tradeData.sellerAddress || ethers.ZeroAddress,
+        ethers.parseEther(tradeData.amount.toString()),
+        ethers.parseEther(tradeData.price.toString())
+      );
+      
+      console.log(`⏳ Transaction sent: ${tx.hash}`);
+      console.log('⏳ Waiting for confirmation...');
+      
+      const receipt = await tx.wait();
+      
+      console.log('✅ Trade executed on-chain!');
+      console.log(`   TX Hash: ${receipt.hash}`);
+      console.log(`   Block: ${receipt.blockNumber}`);
+      console.log(`   Gas Used: ${receipt.gasUsed.toString()}`);
+      
       return {
         success: true,
-        txHash: `0x${Math.random().toString(16).slice(2).padStart(64, '0')}`,
-        blockNumber: Math.floor(Math.random() * 1000000) + 18000000,
-        gasUsed: 50000
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed.toString()
       };
-
-    } catch (error: any) {
-      console.error('❌ Blockchain execution failed:', error);
       
+    } catch (error: any) {
+      console.error('❌ On-chain execution failed:', error);
       return {
         success: false,
-        error: this.parseError(error)
+        error: error.message || 'Transaction failed'
       };
     }
   }
 
-  /**
-   * Get user balance from DEX contract
-   */
-  async getUserBalance(userAddress: string, tokenAddress: string): Promise<string> {
-    if (this.mockMode) {
+  async getUserBalance(userAddress: string, tokenAddress?: string): Promise<string> {
+    if (this.mockMode || !this.provider) {
       // Return mock balance
       return (Math.random() * 1000).toFixed(4);
     }
 
     try {
-      // Real balance check would go here
-      return '0';
+      if (!tokenAddress || tokenAddress === 'ETH') {
+        // Get ETH balance
+        const balance = await this.provider.getBalance(userAddress);
+        return ethers.formatEther(balance);
+      } else {
+        // For ERC20 tokens, would need token contract
+        return '0';
+      }
     } catch (error) {
       console.error('❌ Failed to get user balance:', error);
       return '0';
     }
   }
 
-  /**
-   * Monitor pending transactions
-   */
+  async getWalletAddress(): Promise<string> {
+    return this.wallet?.address || '0x0000000000000000000000000000000000000000';
+  }
+
+  async healthCheck() {
+    const health = {
+      healthy: this.isInitialized,
+      mockMode: this.mockMode,
+      provider: !!this.provider,
+      wallet: !!this.wallet,
+      contract: !!this.contract,
+      contractAddress: process.env.DEX_CONTRACT_ADDRESS,
+      walletAddress: this.wallet?.address,
+      latency: 0,
+      blockNumber: 0,
+      error: null as string | null
+    };
+
+    if (this.provider && !this.mockMode) {
+      try {
+        const start = Date.now();
+        const blockNumber = await this.provider.getBlockNumber();
+        health.latency = Date.now() - start;
+        health.blockNumber = blockNumber;
+      } catch (error: any) {
+        health.error = error.message;
+        health.healthy = false;
+      }
+    }
+
+    return health;
+  }
+
+  setupEventListeners(callback: (event: BlockchainEvent) => void) {
+    this.eventCallbacks.push(callback);
+    
+    if (!this.contract || this.mockMode) {
+      console.log('📌 No contract or in mock mode - skipping event listeners');
+      return;
+    }
+
+    // Listen for TradeExecuted events
+    this.contract.on('TradeExecuted', (tradeId, buyer, seller, amount, price, timestamp) => {
+      console.log('🎉 Trade event received:', tradeId);
+      
+      const event: BlockchainEvent = {
+        type: 'TradeExecuted',
+        data: {
+          tradeId,
+          buyer,
+          seller,
+          amount: ethers.formatEther(amount),
+          price: ethers.formatEther(price),
+          timestamp: timestamp.toString(),
+          txHash: '', // Would need to get from event
+          blockNumber: 0 // Would need to get from event
+        }
+      };
+      
+      // Notify all callbacks
+      this.eventCallbacks.forEach(cb => cb(event));
+    });
+    
+    console.log('📡 Event listeners setup complete');
+  }
+
   async monitorTransaction(txHash: string): Promise<TransactionResult> {
-    if (this.mockMode) {
+    if (this.mockMode || !this.provider) {
       console.log(`🎭 MOCK: Monitoring transaction: ${txHash}`);
       
       // Simulate random success/failure
@@ -158,160 +283,53 @@ export class BlockchainService {
         txHash,
         blockNumber: success ? Math.floor(Math.random() * 1000000) + 18000000 : undefined,
         gasUsed: success ? Math.floor(Math.random() * 100000) + 21000 : undefined,
-        error: success ? undefined : 'Mock transaction failed'
+        error: success ? undefined : 'Transaction failed'
       };
     }
 
     try {
-      // Real transaction monitoring would go here
-      return {
-        success: true,
-        txHash,
-        blockNumber: 18000000,
-        gasUsed: 21000
-      };
-    } catch (error: any) {
-      return {
-        success: false,
-        error: this.parseError(error)
-      };
-    }
-  }
-
-  /**
-   * Get current gas price
-   */
-  async getGasPrice(): Promise<bigint> {
-    if (this.mockMode) {
-      return ethers.parseUnits('20', 'gwei'); // Mock 20 gwei
-    }
-
-    try {
-      if (this.provider) {
-        const feeData = await this.provider.getFeeData();
-        return feeData.gasPrice || ethers.parseUnits('20', 'gwei');
-      }
-      return ethers.parseUnits('20', 'gwei');
-    } catch (error) {
-      console.error('❌ Failed to get gas price:', error);
-      return ethers.parseUnits('20', 'gwei');
-    }
-  }
-
-  /**
-   * Estimate gas for trade execution
-   */
-  async estimateTradeGas(trade: any): Promise<number> {
-    if (this.mockMode) {
-      return Math.floor(Math.random() * 100000) + 50000; // Mock gas estimate
-    }
-
-    try {
-      // Real gas estimation would go here
-      return this.config.gasLimit;
-    } catch (error) {
-      console.error('❌ Gas estimation failed:', error);
-      return this.config.gasLimit;
-    }
-  }
-
-  /**
-   * Setup event listeners
-   */
-  setupEventListeners(callback: (event: any) => void): void {
-    if (this.mockMode) {
-      console.log('🎭 MOCK: Event listeners setup');
+      console.log(`🔍 Monitoring transaction: ${txHash}`);
+      const receipt = await this.provider.waitForTransaction(txHash);
       
-      // Simulate random events
-      setInterval(() => {
-        if (Math.random() > 0.95) { // 5% chance every interval
-          callback({
-            type: 'TradeExecuted',
-            data: {
-              tradeId: `mock-trade-${Date.now()}`,
-              buyer: '0x1234567890123456789012345678901234567890',
-              seller: '0x0987654321098765432109876543210987654321',
-              txHash: `0x${Math.random().toString(16).slice(2).padStart(64, '0')}`,
-              blockNumber: Math.floor(Math.random() * 1000000) + 18000000,
-              timestamp: new Date()
-            }
-          });
-        }
-      }, 10000); // Every 10 seconds
-      
-      return;
-    }
-
-    // Real event listeners would go here
-    console.log('👂 Event listeners setup for DEX contract');
-  }
-
-  /**
-   * Parse blockchain errors
-   */
-  private parseError(error: any): string {
-    if (error.code === 'INSUFFICIENT_FUNDS') {
-      return 'Insufficient funds for gas fees';
-    }
-    
-    if (error.code === 'UNPREDICTABLE_GAS_LIMIT') {
-      return 'Transaction would fail - check token balances and approvals';
-    }
-    
-    return error.message || 'Unknown blockchain error';
-  }
-
-  /**
-   * Health check
-   */
-  async healthCheck(): Promise<{ healthy: boolean; latency?: number; blockNumber?: number; error?: string }> {
-    if (this.mockMode) {
-      return {
-        healthy: true,
-        latency: Math.floor(Math.random() * 100) + 20,
-        blockNumber: Math.floor(Math.random() * 1000000) + 18000000
-      };
-    }
-
-    try {
-      const startTime = Date.now();
-      
-      if (this.provider) {
-        const blockNumber = await this.provider.getBlockNumber();
-        const latency = Date.now() - startTime;
-
+      if (receipt && receipt.status === 1) {
         return {
-          healthy: true,
-          latency,
-          blockNumber
+          success: true,
+          txHash: receipt.hash,
+          blockNumber: receipt.blockNumber,
+          gasUsed: receipt.gasUsed.toString()
+        };
+      } else {
+        return {
+          success: false,
+          txHash,
+          error: 'Transaction reverted'
         };
       }
-
-      return {
-        healthy: false,
-        error: 'Provider not initialized'
-      };
     } catch (error: any) {
+      console.error('❌ Failed to monitor transaction:', error);
       return {
-        healthy: false,
+        success: false,
+        txHash,
         error: error.message
       };
     }
   }
+
+  private parseError(error: any): string {
+    if (error.reason) return error.reason;
+    if (error.message) return error.message;
+    if (error.error?.message) return error.error.message;
+    return 'Unknown blockchain error';
+  }
+
+  isReady(): boolean {
+    return this.isInitialized;
+  }
+
+  isMockMode(): boolean {
+    return this.mockMode;
+  }
 }
 
-// Configuration from environment variables
-const blockchainConfig: BlockchainConfig = {
-  rpcUrl: process.env.BLOCKCHAIN_RPC_URL || 'http://localhost:8545',
-  privateKey: process.env.BLOCKCHAIN_PRIVATE_KEY || '0x0000000000000000000000000000000000000000000000000000000000000000',
-  contractAddress: process.env.DEX_CONTRACT_ADDRESS || '0x0000000000000000000000000000000000000000',
-  networkId: parseInt(process.env.BLOCKCHAIN_NETWORK_ID || '1'),
-  gasLimit: parseInt(process.env.DEFAULT_GAS_LIMIT || '300000'),
-  mockMode: process.env.MOCK_BLOCKCHAIN === 'true' // 🆕 DODANO
-};
-
-// Singleton instance
-export const blockchainService = new BlockchainService(blockchainConfig);
-
-// Export types
-export type { TransactionResult, BlockchainConfig };
+// Export singleton instance
+export const blockchainService = new BlockchainService();
