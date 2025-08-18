@@ -1,8 +1,8 @@
-// routes/orderRoutes.ts - ZAMIJENI POSTOJEĆI
+// routes/orderRoutes.ts - FIXED VERSION
 import { Router } from 'express';
 import { body, query, param } from 'express-validator';
 import { OrderController } from '../controllers/orderController';
-import { EnhancedOrderController } from '../services/tradingServices'; // 🔥 DODANO
+import { tradingService } from '../services/tradingServices';
 
 const router = Router();
 
@@ -85,24 +85,169 @@ const filterValidation = [
   query('sortOrder').optional().isIn(['asc', 'desc'])
 ];
 
-// ===== OSNOVNE RUTE (postojeće) =====
+// ===== BASIC ROUTES =====
 router.get('/', filterValidation, OrderController.getAllOrders);
 router.get('/stats/summary', OrderController.getOrdersSummary);
 router.get('/stats/volume/:pair', OrderController.getVolumeStats);
 router.get('/number/:no', OrderController.getOrderByNumber);
 router.get('/:id', OrderController.getOrderById);
 
-// 🔥 MIJENJAJ OVU LINIJU - koristi EnhancedOrderController umjesto OrderController
-router.post('/', createOrderValidation, EnhancedOrderController.createOrder);
+// ✅ FIXED: Use OrderController instead of non-existent EnhancedOrderController
+router.post('/', createOrderValidation, OrderController.createOrder);
 router.post('/bulk', OrderController.createBulkOrders);
 
 router.put('/:id', updateOrderValidation, OrderController.updateOrder);
-router.patch('/:id/cancel', EnhancedOrderController.cancelOrder); // 🔥 I OVU
 router.patch('/:id/fill', OrderController.fillOrder);
-
 router.delete('/:id', OrderController.deleteOrder);
 
-// ===== NOVE TRADING RUTE =====
+// ===== ENHANCED TRADING ROUTES =====
+// Create enhanced order controller object with methods from trading service
+const EnhancedOrderController = {
+  // Cancel order using trading service
+  cancelOrder: async (req: any, res: any) => {
+    try {
+      const { id } = req.params;
+      const { pair } = req.query;
+      
+      if (!pair) {
+        return res.status(400).json({
+          success: false,
+          message: 'Trading pair is required for cancellation'
+        });
+      }
+      
+      const result = await tradingService.cancelOrder(id, pair as string);
+      
+      if (result.success) {
+        res.json({
+          success: true,
+          message: result.message
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          message: result.message
+        });
+      }
+    } catch (error: any) {
+      console.error('❌ Cancel order error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to cancel order',
+        error: error.message
+      });
+    }
+  },
+
+  // Get order book
+  getOrderBook: async (req: any, res: any) => {
+    try {
+      const { pair } = req.params;
+      const orderBook = tradingService.getOrderBook(pair);
+      
+      if (!orderBook) {
+        return res.status(404).json({
+          success: false,
+          message: `Order book not found for pair ${pair}`
+        });
+      }
+      
+      res.json({
+        success: true,
+        data: {
+          pair,
+          bids: orderBook.bids,
+          asks: orderBook.asks,
+          timestamp: new Date().toISOString()
+        }
+      });
+    } catch (error: any) {
+      console.error('❌ Get order book error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to get order book',
+        error: error.message
+      });
+    }
+  },
+
+  // Get recent trades
+  getRecentTrades: async (req: any, res: any) => {
+    try {
+      const { pair } = req.params;
+      const limit = parseInt(req.query.limit as string) || 50;
+      
+      const trades = tradingService.getRecentTrades(pair, limit);
+      
+      res.json({
+        success: true,
+        data: {
+          pair,
+          trades,
+          count: trades.length,
+          timestamp: new Date().toISOString()
+        }
+      });
+    } catch (error: any) {
+      console.error('❌ Get recent trades error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to get recent trades',
+        error: error.message
+      });
+    }
+  },
+
+  // Get market data
+  getMarketData: async (req: any, res: any) => {
+    try {
+      const { pair } = req.params;
+      const marketData = tradingService.getMarketData(pair);
+      
+      res.json({
+        success: true,
+        data: {
+          ...marketData,
+          pair,
+          timestamp: new Date().toISOString()
+        }
+      });
+    } catch (error: any) {
+      console.error('❌ Get market data error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to get market data',
+        error: error.message
+      });
+    }
+  },
+
+  // Get active pairs
+  getActivePairs: async (req: any, res: any) => {
+    try {
+      const activePairs = tradingService.getActivePairs();
+      
+      res.json({
+        success: true,
+        data: {
+          pairs: activePairs,
+          count: activePairs.length,
+          timestamp: new Date().toISOString()
+        }
+      });
+    } catch (error: any) {
+      console.error('❌ Get active pairs error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to get active pairs',
+        error: error.message
+      });
+    }
+  }
+};
+
+// ✅ NOW THESE ROUTES WILL WORK
+router.patch('/:id/cancel', EnhancedOrderController.cancelOrder);
 router.get('/orderbook/:pair', EnhancedOrderController.getOrderBook);
 router.get('/trades/:pair', EnhancedOrderController.getRecentTrades);
 router.get('/market/:pair', EnhancedOrderController.getMarketData);
