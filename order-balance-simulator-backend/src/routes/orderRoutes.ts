@@ -60,10 +60,12 @@ router.post('/', createOrderValidation, validateRequest, async (req: Request, re
     let side = 'buy';
     let type = 'limit';
     
-    if (orderData.type.includes('Buy')) side = 'buy';
-    if (orderData.type.includes('Sell')) side = 'sell';
-    if (orderData.type.includes('Market')) type = 'market';
-    if (orderData.type.includes('Limit')) type = 'limit';
+    // if (orderData.type.includes('Buy')) side = 'buy';
+    // if (orderData.type.includes('Sell')) side = 'sell';
+    // if (orderData.type.includes('Market')) type = 'market';
+    // if (orderData.type.includes('Limit')) type = 'limit';
+    const originalType = orderData.type; // Sačuvaj originalni type
+orderData.type = originalType;
     
     const formattedOrder = {
       ...orderData,

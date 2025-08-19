@@ -5,7 +5,12 @@ export enum OrderType {
   LIMIT_BUY = 'Limit Buy',
   LIMIT_SELL = 'Limit Sell', 
   MARKET_BUY = 'Market Buy',
-  MARKET_SELL = 'Market Sell'
+  MARKET_SELL = 'Market Sell',
+  // Dodaj i lowercase verzije
+  limit_buy = 'limit buy',
+  limit_sell = 'limit sell',
+  market_buy = 'market buy',
+  market_sell = 'market sell'
 }
 
 export enum OrderStatus {
