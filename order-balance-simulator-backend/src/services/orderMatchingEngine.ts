@@ -1,5 +1,6 @@
-// services/orderMatchingEngine.ts
+// order-balance-simulator-backend/src/services/orderMatchingEngine.ts
 import Order, { IOrder, OrderType, OrderStatus } from '../models/orderModel';
+import Trade, { ITrade } from '../models/tradeModel'; // DODATO
 import { EventEmitter } from 'events';
 
 interface OrderBookEntry {
@@ -10,7 +11,7 @@ interface OrderBookEntry {
   order: IOrder;
 }
 
-interface Trade {
+interface TradeData {
   buyOrderId: string;
   sellOrderId: string;
   price: number;
@@ -27,7 +28,7 @@ interface OrderBookState {
 export class OrderMatchingEngine extends EventEmitter {
   private orderBooks: Map<string, OrderBookState> = new Map();
   private isProcessing: Map<string, boolean> = new Map();
-  private trades: Trade[] = [];
+  private trades: TradeData[] = [];
   
   constructor() {
     super();
@@ -63,7 +64,7 @@ export class OrderMatchingEngine extends EventEmitter {
   /**
    * Process a new order (main entry point)
    */
-  async processOrder(order: IOrder): Promise<{ trades: Trade[], remainingOrder?: IOrder }> {
+  async processOrder(order: IOrder): Promise<{ trades: TradeData[], remainingOrder?: IOrder }> {
     const pair = order.pair.toUpperCase();
     console.log(`📊 Processing order ${order.no} for ${pair}: ${order.type} ${order.amount}@${order.price}`);
 
@@ -84,9 +85,9 @@ export class OrderMatchingEngine extends EventEmitter {
   /**
    * Process market order
    */
-  private async processMarketOrder(order: IOrder): Promise<{ trades: Trade[], remainingOrder?: IOrder }> {
+  private async processMarketOrder(order: IOrder): Promise<{ trades: TradeData[], remainingOrder?: IOrder }> {
     const pair = order.pair.toUpperCase();
-    const trades: Trade[] = [];
+    const trades: TradeData[] = [];
     let remainingAmount = order.amount;
 
     if (!this.orderBooks.has(pair)) {
@@ -97,16 +98,13 @@ export class OrderMatchingEngine extends EventEmitter {
     const isMarketBuy = order.type === OrderType.MARKET_BUY;
     const oppositeOrders = isMarketBuy ? book.asks : book.bids;
 
-    // Sort to get best prices first
-    this.sortOrderBook(pair);
-
-    while (remainingAmount > 0 && oppositeOrders.length > 0) {
+    while (oppositeOrders.length > 0 && remainingAmount > 0) {
       const bestOpposite = oppositeOrders[0];
       const tradeAmount = Math.min(remainingAmount, bestOpposite.amount);
       const tradePrice = bestOpposite.price;
 
       // Create trade
-      const trade: Trade = {
+      const trade: TradeData = {
         buyOrderId: isMarketBuy ? order._id.toString() : bestOpposite.orderId,
         sellOrderId: isMarketBuy ? bestOpposite.orderId : order._id.toString(),
         price: tradePrice,
@@ -118,56 +116,63 @@ export class OrderMatchingEngine extends EventEmitter {
       trades.push(trade);
       this.trades.push(trade);
 
-      // Update remaining amounts
+      // Save trade to database with blockchain execution
+      await this.executeTrade(trade, 
+        isMarketBuy ? order : bestOpposite.order,
+        isMarketBuy ? bestOpposite.order : order
+      );
+
+      // Update amounts
       remainingAmount -= tradeAmount;
       bestOpposite.amount -= tradeAmount;
 
-      // If opposite order is fully filled, remove it and mark as filled
+      // If opposite order is fully filled, remove and update database
       if (bestOpposite.amount === 0) {
         oppositeOrders.shift();
         await this.fillOrder(bestOpposite.order, trade.timestamp);
       }
 
-      console.log(`🤝 Market trade executed: ${tradeAmount} ${pair} @ ${tradePrice}`);
+      console.log(`🤝 Trade executed: ${tradeAmount} ${pair} @ ${tradePrice}`);
     }
 
-    // Update the market order
+    // Update market order status
     if (remainingAmount === 0) {
-      // Market order fully filled
       await this.fillOrder(order, new Date());
       this.emit('orderFilled', order, trades);
     } else {
-      // Market order partially filled - this shouldn't happen in a real exchange
-      // but we'll handle it by cancelling the remaining amount
-      console.warn(`⚠️ Market order ${order.no} partially filled. Cancelling remaining ${remainingAmount}`);
-      await order.cancel();
+      // Partial fill for market order
+      order.filledAmount = order.amount - remainingAmount;
+      order.remainingAmount = remainingAmount;
+      await order.save();
       this.emit('orderPartiallyFilled', order, trades);
     }
 
-    this.emit('tradesExecuted', trades);
+    if (trades.length > 0) {
+      this.emit('tradesExecuted', trades);
+    }
+
     return { trades, remainingOrder: remainingAmount > 0 ? order : undefined };
   }
 
   /**
    * Process limit order
    */
-  private async processLimitOrder(order: IOrder): Promise<{ trades: Trade[], remainingOrder?: IOrder }> {
+  private async processLimitOrder(order: IOrder): Promise<{ trades: TradeData[], remainingOrder?: IOrder }> {
     const pair = order.pair.toUpperCase();
-    let trades: Trade[] = [];
+    const trades: TradeData[] = [];
+    
+    // Try to match with existing orders first
+    const matchResult = await this.matchWithExistingOrders(order);
+    trades.push(...matchResult.trades);
 
-    // First try to match against existing orders
-    const matchResult = await this.matchAgainstBook(order);
-    trades = matchResult.trades;
-
-    // If order has remaining amount, add to order book
+    // If order is not fully filled, add to order book
     if (matchResult.remainingAmount > 0) {
-      // Update the order amount in database
       order.amount = matchResult.remainingAmount;
-      order.total = order.price * order.amount;
+      order.filledAmount = (order.filledAmount || 0) + (order.amount - matchResult.remainingAmount);
+      order.remainingAmount = matchResult.remainingAmount;
       await order.save();
       
-      // Add to order book
-      await this.addOrderToBook(order, false);
+      await this.addOrderToBook(order);
       this.emit('orderAddedToBook', order);
     } else {
       // Order fully filled
@@ -186,11 +191,11 @@ export class OrderMatchingEngine extends EventEmitter {
   }
 
   /**
-   * Try to match an order against the existing order book
+   * Match order with existing orders in the book
    */
-  private async matchAgainstBook(order: IOrder): Promise<{ trades: Trade[], remainingAmount: number }> {
+  private async matchWithExistingOrders(order: IOrder): Promise<{ trades: TradeData[], remainingAmount: number }> {
     const pair = order.pair.toUpperCase();
-    const trades: Trade[] = [];
+    const trades: TradeData[] = [];
     let remainingAmount = order.amount;
 
     if (!this.orderBooks.has(pair)) {
@@ -202,12 +207,9 @@ export class OrderMatchingEngine extends EventEmitter {
     const isBuyOrder = order.type === OrderType.LIMIT_BUY;
     const oppositeOrders = isBuyOrder ? book.asks : book.bids;
 
-    // Sort to ensure best prices first
-    this.sortOrderBook(pair);
-
-    while (remainingAmount > 0 && oppositeOrders.length > 0) {
+    while (oppositeOrders.length > 0 && remainingAmount > 0) {
       const bestOpposite = oppositeOrders[0];
-      
+
       // Check if prices cross
       const canMatch = isBuyOrder 
         ? order.price >= bestOpposite.price  // Buy order price >= Ask price
@@ -221,7 +223,7 @@ export class OrderMatchingEngine extends EventEmitter {
       const tradePrice = bestOpposite.price; // Price priority: first come, first served
 
       // Create trade
-      const trade: Trade = {
+      const trade: TradeData = {
         buyOrderId: isBuyOrder ? order._id.toString() : bestOpposite.orderId,
         sellOrderId: isBuyOrder ? bestOpposite.orderId : order._id.toString(),
         price: tradePrice,
@@ -232,6 +234,12 @@ export class OrderMatchingEngine extends EventEmitter {
 
       trades.push(trade);
       this.trades.push(trade);
+
+      // Save trade to database with blockchain execution
+      await this.executeTrade(trade,
+        isBuyOrder ? order : bestOpposite.order,
+        isBuyOrder ? bestOpposite.order : order
+      );
 
       // Update amounts
       remainingAmount -= tradeAmount;
@@ -250,6 +258,104 @@ export class OrderMatchingEngine extends EventEmitter {
   }
 
   /**
+   * Execute trade and save to database with blockchain execution
+   */
+  private async executeTrade(trade: TradeData, buyOrder: IOrder, sellOrder: IOrder): Promise<void> {
+    try {
+      // Generate unique trade ID
+      const tradeId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Save trade to database
+      const tradeDoc = new Trade({
+        tradeId,
+        buyOrderId: trade.buyOrderId,
+        sellOrderId: trade.sellOrderId,
+        buyerAddress: buyOrder.walletAddress || '0x0000000000000000000000000000000000000000',
+        sellerAddress: sellOrder.walletAddress || '0x0000000000000000000000000000000000000000',
+        pair: trade.pair,
+        price: trade.price,
+        amount: trade.amount,
+        total: trade.price * trade.amount,
+        timestamp: trade.timestamp,
+        onChainStatus: 'pending'
+      });
+      
+      await tradeDoc.save();
+      console.log(`💾 Trade saved to DB: ${tradeDoc.tradeId}`);
+      
+      // Execute on blockchain asynchronously
+      if (process.env.BLOCKCHAIN_MOCK_MODE !== 'true') {
+        this.executeOnBlockchain(tradeDoc).catch(error => {
+          console.error('❌ Blockchain execution failed:', error);
+        });
+      }
+      
+    } catch (error) {
+      console.error('❌ Failed to save trade:', error);
+    }
+  }
+
+  /**
+   * Execute trade on blockchain
+   */
+  private async executeOnBlockchain(trade: ITrade): Promise<void> {
+    try {
+      const { blockchainService } = require('./blockchainServices');
+      
+      console.log(`🔗 Executing trade ${trade.tradeId} on blockchain...`);
+      
+      const result = await blockchainService.executeTradeOnChain({
+        tradeId: trade.tradeId,
+        buyerAddress: trade.buyerAddress,
+        sellerAddress: trade.sellerAddress,
+        amount: trade.amount.toString(),
+        price: trade.price.toString(),
+        pair: trade.pair
+      });
+      
+      if (result.success) {
+        // Update trade with blockchain data
+        trade.txHash = result.txHash;
+        trade.blockNumber = result.blockNumber;
+        trade.gasUsed = result.gasUsed;
+        trade.onChainStatus = 'confirmed';
+        await trade.save();
+        
+        console.log(`✅ Trade ${trade.tradeId} confirmed on-chain: ${result.txHash}`);
+        
+        // Emit event for confirmed trade
+        this.emit('tradeOnChainConfirmed', {
+          tradeId: trade.tradeId,
+          txHash: result.txHash,
+          blockNumber: result.blockNumber
+        });
+        
+      } else {
+        trade.onChainStatus = 'failed';
+        trade.blockchainError = result.error;
+        await trade.save();
+        
+        console.error(`❌ Trade ${trade.tradeId} failed on-chain: ${result.error}`);
+        
+        this.emit('tradeOnChainFailed', {
+          tradeId: trade.tradeId,
+          error: result.error
+        });
+      }
+    } catch (error: any) {
+      console.error('❌ Blockchain execution error:', error);
+      trade.onChainStatus = 'failed';
+      trade.blockchainError = error.message;
+      await trade.save();
+      
+      this.emit('tradeOnChainFailed', {
+        tradeId: trade.tradeId,
+        error: error.message
+      });
+    }
+  }
+
+  /**
    * Add order to the appropriate order book
    */
   private async addOrderToBook(order: IOrder, triggerMatching = true): Promise<void> {
@@ -260,65 +366,39 @@ export class OrderMatchingEngine extends EventEmitter {
     }
 
     const book = this.orderBooks.get(pair)!;
-    const orderBookEntry: OrderBookEntry = {
+    const isBuyOrder = order.type === OrderType.LIMIT_BUY;
+    const targetBook = isBuyOrder ? book.bids : book.asks;
+
+    const entry: OrderBookEntry = {
       orderId: order._id.toString(),
       price: order.price,
-      amount: order.amount,
-      timestamp: order.orderTime,
+      amount: order.remainingAmount || order.amount,
+      timestamp: order.orderTime || new Date(),
       order: order
     };
 
-    if (order.type === OrderType.LIMIT_BUY) {
-      book.bids.push(orderBookEntry);
-    } else if (order.type === OrderType.LIMIT_SELL) {
-      book.asks.push(orderBookEntry);
-    }
-
-    // Sort the order book
+    targetBook.push(entry);
     this.sortOrderBook(pair);
 
     if (triggerMatching) {
-      // Try to match against existing orders
       await this.matchOrders(pair);
     }
   }
 
   /**
-   * Remove order from order book (when cancelled)
-   */
-  async removeOrderFromBook(orderId: string, pair: string): Promise<boolean> {
-    const book = this.orderBooks.get(pair.toUpperCase());
-    if (!book) return false;
-
-    const bidIndex = book.bids.findIndex(entry => entry.orderId === orderId);
-    if (bidIndex !== -1) {
-      book.bids.splice(bidIndex, 1);
-      return true;
-    }
-
-    const askIndex = book.asks.findIndex(entry => entry.orderId === orderId);
-    if (askIndex !== -1) {
-      book.asks.splice(askIndex, 1);
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Sort order book entries
+   * Sort order book
    */
   private sortOrderBook(pair: string): void {
     const book = this.orderBooks.get(pair);
     if (!book) return;
 
-    // Sort bids: highest price first, then earliest timestamp
+    // Sort bids: highest price first, then oldest first
     book.bids.sort((a, b) => {
       if (a.price !== b.price) return b.price - a.price;
       return a.timestamp.getTime() - b.timestamp.getTime();
     });
 
-    // Sort asks: lowest price first, then earliest timestamp
+    // Sort asks: lowest price first, then oldest first
     book.asks.sort((a, b) => {
       if (a.price !== b.price) return a.price - b.price;
       return a.timestamp.getTime() - b.timestamp.getTime();
@@ -339,7 +419,7 @@ export class OrderMatchingEngine extends EventEmitter {
       }
 
       this.sortOrderBook(pair);
-      const trades: Trade[] = [];
+      const trades: TradeData[] = [];
 
       while (book.bids.length > 0 && book.asks.length > 0) {
         const bestBid = book.bids[0];
@@ -353,7 +433,7 @@ export class OrderMatchingEngine extends EventEmitter {
         const tradeAmount = Math.min(bestBid.amount, bestAsk.amount);
         const tradePrice = bestAsk.price; // Price priority: ask price (earlier order)
 
-        const trade: Trade = {
+        const trade: TradeData = {
           buyOrderId: bestBid.orderId,
           sellOrderId: bestAsk.orderId,
           price: tradePrice,
@@ -364,6 +444,9 @@ export class OrderMatchingEngine extends EventEmitter {
 
         trades.push(trade);
         this.trades.push(trade);
+
+        // Save trade to database with blockchain execution
+        await this.executeTrade(trade, bestBid.order, bestAsk.order);
 
         // Update amounts
         bestBid.amount -= tradeAmount;
@@ -391,98 +474,104 @@ export class OrderMatchingEngine extends EventEmitter {
   }
 
   /**
-   * Mark order as filled in database
+   * Mark order as filled
    */
   private async fillOrder(order: IOrder, filledTime: Date): Promise<void> {
-    try {
-      await order.fill(filledTime);
-      this.emit('orderFilled', order);
-    } catch (error) {
-      console.error(`❌ Error filling order ${order.no}:`, error);
-    }
+    order.status = OrderStatus.FILLED;
+    order.filledTime = filledTime;
+    order.filledAmount = order.amount;
+    order.remainingAmount = 0;
+    await order.save();
   }
 
   /**
    * Cancel an order
    */
   async cancelOrder(orderId: string, pair: string): Promise<boolean> {
-    const removed = await this.removeOrderFromBook(orderId, pair);
-    if (removed) {
-      this.emit('orderCancelled', orderId, pair);
+    const book = this.orderBooks.get(pair.toUpperCase());
+    if (!book) return false;
+
+    // Check in bids
+    const bidIndex = book.bids.findIndex(b => b.orderId === orderId);
+    if (bidIndex !== -1) {
+      book.bids.splice(bidIndex, 1);
+      return true;
     }
-    return removed;
+
+    // Check in asks
+    const askIndex = book.asks.findIndex(a => a.orderId === orderId);
+    if (askIndex !== -1) {
+      book.asks.splice(askIndex, 1);
+      return true;
+    }
+
+    return false;
   }
 
   /**
-   * Get current order book for a pair
+   * Get order book for a pair
    */
-  getOrderBook(pair: string): OrderBookState | null {
+  getOrderBook(pair: string): { bids: any[], asks: any[] } {
     const book = this.orderBooks.get(pair.toUpperCase());
-    if (!book) return null;
+    if (!book) return { bids: [], asks: [] };
 
-    // Return a deep copy to prevent external modifications
     return {
-      bids: book.bids.map(entry => ({ ...entry })),
-      asks: book.asks.map(entry => ({ ...entry }))
+      bids: book.bids.map(b => ({
+        price: b.price,
+        amount: b.amount,
+        total: b.price * b.amount,
+        orderId: b.orderId
+      })),
+      asks: book.asks.map(a => ({
+        price: a.price,
+        amount: a.amount,
+        total: a.price * a.amount,
+        orderId: a.orderId
+      }))
     };
   }
 
   /**
    * Get recent trades for a pair
    */
-  getRecentTrades(pair: string, limit = 50): Trade[] {
+  getRecentTrades(pair: string, limit = 50): TradeData[] {
     return this.trades
-      .filter(trade => trade.pair === pair.toUpperCase())
-      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-      .slice(0, limit);
+      .filter(t => t.pair === pair.toUpperCase())
+      .slice(-limit)
+      .reverse();
   }
 
   /**
    * Get market data for a pair
    */
-  getMarketData(pair: string) {
-    const book = this.getOrderBook(pair);
-    const recentTrades = this.getRecentTrades(pair, 100);
-    
-    if (!book) {
+  getMarketData(pair: string): any {
+    const pairTrades = this.trades.filter(t => t.pair === pair.toUpperCase());
+    const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const trades24h = pairTrades.filter(t => t.timestamp > last24h);
+
+    if (trades24h.length === 0) {
       return {
         pair,
-        bestBid: null,
-        bestAsk: null,
-        spread: null,
-        lastPrice: null,
+        lastPrice: 0,
         volume24h: 0,
-        change24h: 0
+        high24h: 0,
+        low24h: 0,
+        change24h: 0,
+        changePercent24h: 0
       };
     }
 
-    const bestBid = book.bids[0]?.price || null;
-    const bestAsk = book.asks[0]?.price || null;
-    const spread = bestBid && bestAsk ? bestAsk - bestBid : null;
-    const lastPrice = recentTrades[0]?.price || null;
+    const prices = trades24h.map(t => t.price);
+    const volumes = trades24h.map(t => t.amount);
     
-    // Calculate 24h volume and change
-    const last24h = Date.now() - 24 * 60 * 60 * 1000;
-    const trades24h = recentTrades.filter(t => t.timestamp.getTime() > last24h);
-    const volume24h = trades24h.reduce((sum, trade) => sum + (trade.amount * trade.price), 0);
-    
-    const firstPriceToday = trades24h[trades24h.length - 1]?.price;
-    const change24h = firstPriceToday && lastPrice 
-      ? ((lastPrice - firstPriceToday) / firstPriceToday) * 100 
-      : 0;
-
     return {
       pair,
-      bestBid,
-      bestAsk,
-      spread,
-      lastPrice,
-      volume24h,
-      change24h,
-      orderBookDepth: {
-        bids: book.bids.length,
-        asks: book.asks.length
-      }
+      lastPrice: pairTrades[pairTrades.length - 1]?.price || 0,
+      volume24h: volumes.reduce((a, b) => a + b, 0),
+      high24h: Math.max(...prices),
+      low24h: Math.min(...prices),
+      change24h: 0, // Would need historical data
+      changePercent24h: 0 // Would need historical data
     };
   }
 
@@ -494,22 +583,11 @@ export class OrderMatchingEngine extends EventEmitter {
   }
 
   /**
-   * Clean up old trades (call periodically)
+   * Cleanup old trades (keep last 1000)
    */
-  cleanupOldTrades(daysToKeep = 30): void {
-    const cutoff = Date.now() - (daysToKeep * 24 * 60 * 60 * 1000);
-    const initialLength = this.trades.length;
-    
-    this.trades = this.trades.filter(trade => 
-      trade.timestamp.getTime() > cutoff
-    );
-    
-    const removed = initialLength - this.trades.length;
-    if (removed > 0) {
-      console.log(`🧹 Cleaned up ${removed} old trades`);
+  cleanupOldTrades(): void {
+    if (this.trades.length > 1000) {
+      this.trades = this.trades.slice(-1000);
     }
   }
 }
-
-// Singleton instance
-export const matchingEngine = new OrderMatchingEngine();

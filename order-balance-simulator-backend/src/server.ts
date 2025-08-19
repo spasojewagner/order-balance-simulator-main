@@ -1,4 +1,4 @@
-// backend/src/server.ts - ENHANCED VERSION SA BLOCKCHAIN INTEGRATION
+// order-balance-simulator-backend/src/server.ts - COMPLETE VERSION WITH TX HASH STORAGE
 
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
@@ -13,9 +13,9 @@ import cookieParser from 'cookie-parser';
 
 // Import services
 import orderRoutes from './routes/orderRoutes';
-import blockchainRoutes from './routes/blockchainRoutes'; // 🆕 NEW
+import blockchainRoutes from './routes/blockchainRoutes';
 import { tradingService } from './services/tradingServices'; 
-import { blockchainService } from './services/blockchainServices'; // 🆕 NEW
+import { blockchainService } from './services/blockchainServices';
 
 dotenv.config();
 
@@ -69,6 +69,63 @@ const io = new IOServer(httpServer, {
       }
     });
 
+    // Listen for trade events from matching engine
+    tradingService.on('tradeOnChainConfirmed', (data) => {
+      console.log(`📡 Trade confirmed on-chain: ${data.tradeId}`);
+      
+      // Notify frontend via WebSocket
+      io.emit('trade_blockchain_confirmed', {
+        tradeId: data.tradeId,
+        txHash: data.txHash,
+        blockNumber: data.blockNumber,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    // Listen for blockchain failure events
+    tradingService.on('tradeOnChainFailed', (data) => {
+      console.log(`❌ Trade failed on-chain: ${data.tradeId}`);
+      
+      io.emit('trade_blockchain_failed', {
+        tradeId: data.tradeId,
+        error: data.error,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    // Monitor pending transactions every 30 seconds
+    setInterval(async () => {
+      try {
+        const Trade = require('./models/tradeModel').default;
+        const pendingTrades = await Trade.find({ 
+          onChainStatus: 'pending',
+          txHash: { $exists: true }
+        });
+        
+        for (const trade of pendingTrades) {
+          const result = await blockchainService.monitorTransaction(trade.txHash);
+          
+          if (result.success) {
+            trade.onChainStatus = 'confirmed';
+            trade.blockNumber = result.blockNumber;
+            trade.gasUsed = result.gasUsed;
+            await trade.save();
+            
+            console.log(`✅ Trade ${trade.tradeId} confirmed: ${trade.txHash}`);
+            
+            io.emit('trade_blockchain_confirmed', {
+              tradeId: trade.tradeId,
+              txHash: trade.txHash,
+              blockNumber: result.blockNumber,
+              gasUsed: result.gasUsed
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Error monitoring pending trades:', error);
+      }
+    }, 30000); // Check every 30 seconds
+
   } catch (error) {
     console.error('❌ Initialization failed:', error);
     process.exit(1);
@@ -80,7 +137,20 @@ tradingService.setSocketIO(io);
 
 // ----- 3) ROUTES -----
 app.use('/api/orders', orderRoutes);
-app.use('/api/blockchain', blockchainRoutes); // 🆕 NEW BLOCKCHAIN ROUTES
+app.use('/api/blockchain', blockchainRoutes);
+
+// Health check endpoint
+app.get('/health', (req: Request, res: Response) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    services: {
+      database: 'connected',
+      blockchain: blockchainService.isReady() ? 'connected' : 'disconnected',
+      trading: 'active'
+    }
+  });
+});
 
 // ----- 4) COINGECKO PROXY + CACHE + RATE LIMIT -----
 const cache = new NodeCache({ stdTTL: 60 });
@@ -90,153 +160,77 @@ async function proxyGet(path: string, query: Record<string, any>) {
   const key = `${path}_${JSON.stringify(query)}`;
   const cached = cache.get(key);
   if (cached) return cached;
-
+  
   if (Date.now() < rateLimitedUntil) {
-    const err: any = new Error('Cooldown active');
-    err.status = 429;
-    throw err;
+    throw new Error('Rate limited');
   }
-
+  
   try {
-    const resp = await axios.get(`https://api.coingecko.com/api/v3${path}`, {
-      params: query,
-      headers: { 'User-Agent': 'CryptoSocketApp/1.0' },
-    });
+    const resp = await axios.get(`https://api.coingecko.com/api/v3${path}`, { params: query });
     cache.set(key, resp.data);
     return resp.data;
-  } catch (e: any) {
-    const status = e.response?.status || 500;
-    if (status === 429) {
-      const retry = parseInt(e.response.headers['retry-after'] || '60', 10);
-      rateLimitedUntil = Date.now() + retry * 1000;
-      console.warn(`Rate limited; retry after ${retry}s`);
+  } catch (error: any) {
+    if (error.response?.status === 429) {
+      const retryAfter = parseInt(error.response.headers['retry-after'] || '60');
+      rateLimitedUntil = Date.now() + (retryAfter * 1000);
+      throw new Error(`Rate limited for ${retryAfter}s`);
     }
-    const err: any = new Error(e.message);
-    err.status = status;
-    throw err;
+    throw error;
   }
 }
 
-// Enhanced API routes
-const wrap = (fn: (req: Request, res: Response) => Promise<any>) =>
-  (req: Request, res: Response, next: NextFunction) =>
-    fn(req, res).catch(next);
-
-app.get('/api/coins/markets', wrap(async (req, res) => {
-  const data = await proxyGet('/coins/markets', {
-    vs_currency: req.query.vs_currency || 'usd',
-    order: req.query.order || 'market_cap_desc',
-    per_page: req.query.per_page || 20,
-    page: req.query.page || 1,
-    sparkline: req.query.sparkline ?? false,
-  });
-  res.json(data);
-}));
-
-app.get('/api/coins/:id', wrap(async (req, res) => {
-  const data = await proxyGet(`/coins/${req.params.id}`, {
-    localization: false,
-    tickers: false,
-    market_data: true,
-    community_data: false,
-    developer_data: false,
-    sparkline: false,
-  });
-  res.json(data);
-}));
-
-// 🆕 ENHANCED HEALTH CHECK WITH BLOCKCHAIN STATUS
-app.get('/api/health', wrap(async (req, res) => {
+app.get('/api/proxy/coingecko/*', async (req: Request, res: Response) => {
   try {
-    const blockchainHealth = await blockchainService.healthCheck();
-    
-    res.json({
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      services: {
-        database: 'connected',
-        blockchain: {
-          healthy: blockchainHealth.healthy,
-          latency: blockchainHealth.latency,
-          blockNumber: blockchainHealth.blockNumber,
-          error: blockchainHealth.error
-        },
-        trading: {
-          activePairs: tradingService.getActivePairs().length,
-          status: 'running'
-        }
-      },
-      uptime: process.uptime()
-    });
+    const path = req.path.replace('/api/proxy/coingecko', '');
+    const data = await proxyGet(path, req.query as Record<string, any>);
+    res.json(data);
   } catch (error: any) {
-    res.status(500).json({
-      status: 'error',
-      error: error.message
+    res.status(error.response?.status || 500).json({ 
+      error: error.message || 'Proxy error' 
     });
   }
-}));
+});
 
-// ----- 5) WEBSOCKET ENHANCEMENTS -----
-
-// Store connected clients with their preferences
-const connectedClients = new Map<string, {
-  socket: Socket;
+// ----- 5) WEBSOCKET HANDLING -----
+interface ConnectedClient {
+  socketId: string;
   subscribedPairs: Set<string>;
   walletAddress?: string;
-}>();
+}
+
+const connectedClients = new Map<string, ConnectedClient>();
 
 io.on('connection', (socket: Socket) => {
-  console.log(`🔌 Client connected: ${socket.id}`);
+  console.log(`🔌 New client connected: ${socket.id}`);
   
-  // Initialize client data
   connectedClients.set(socket.id, {
-    socket,
-    subscribedPairs: new Set(),
+    socketId: socket.id,
+    subscribedPairs: new Set()
   });
 
-  // 🆕 WALLET ASSOCIATION
-  socket.on('associate_wallet', (data: { walletAddress: string }) => {
-    const client = connectedClients.get(socket.id);
-    if (client) {
-      client.walletAddress = data.walletAddress;
-      console.log(`💰 Wallet associated: ${socket.id} → ${data.walletAddress}`);
-      
-      socket.emit('wallet_associated', {
-        success: true,
-        walletAddress: data.walletAddress
-      });
-    }
-  });
-
-  // 🆕 BLOCKCHAIN SUBSCRIPTION
-  socket.on('subscribe_blockchain_events', () => {
-    socket.join('blockchain_events');
-    console.log(`🔗 Client ${socket.id} subscribed to blockchain events`);
-  });
-
-  socket.on('unsubscribe_blockchain_events', () => {
-    socket.leave('blockchain_events');
-    console.log(`🔗 Client ${socket.id} unsubscribed from blockchain events`);
-  });
-
-  // Enhanced price subscription
+  // Price subscription
   socket.on('subscribe', (coinId: string) => {
     const client = connectedClients.get(socket.id);
     if (client) {
       client.subscribedPairs.add(coinId);
     }
     
-    // Original CoinGecko subscription logic
     activeSubs.add(coinId);
-    const sym = coinToBinance[coinId];
-    if (sym) {
-      connectBinance(sym);
-      if (latestPrices[coinId]) {
-        socket.emit(`price_update_${coinId}`, {
-          price: latestPrices[coinId],
-          timestamp: Date.now(),
-        });
-      }
+    socket.join(`price_${coinId}`);
+    console.log(`📊 Client ${socket.id} subscribed to ${coinId}`);
+    
+    // Send current price if available
+    if (latestPrices[coinId]) {
+      socket.emit(`price_update_${coinId}`, { 
+        price: latestPrices[coinId], 
+        timestamp: Date.now() 
+      });
+    }
+    
+    // Start Binance stream if needed
+    const binanceSymbol = coinToBinance[coinId];
+    if (binanceSymbol && !socketsBinance[binanceSymbol]) {
+      connectBinance(binanceSymbol);
     }
   });
 
@@ -245,11 +239,18 @@ io.on('connection', (socket: Socket) => {
     if (client) {
       client.subscribedPairs.delete(coinId);
     }
-    activeSubs.delete(coinId);
+    
+    socket.leave(`price_${coinId}`);
+    console.log(`📊 Client ${socket.id} unsubscribed from ${coinId}`);
   });
 
-  // 🆕 ORDER STATUS SUBSCRIPTION
+  // Order status subscription
   socket.on('subscribe_orders', (walletAddress: string) => {
+    const client = connectedClients.get(socket.id);
+    if (client) {
+      client.walletAddress = walletAddress;
+    }
+    
     socket.join(`orders_${walletAddress}`);
     console.log(`📋 Client ${socket.id} subscribed to orders for ${walletAddress}`);
   });
@@ -275,7 +276,7 @@ io.on('connection', (socket: Socket) => {
   });
 });
 
-// 🆕 ENHANCED TRADING SERVICE EVENT HANDLERS
+// Enhanced trading service event handlers
 tradingService.on('orderMatched', (buyOrder, sellOrder, trades) => {
   console.log(`🎯 Orders matched: ${buyOrder._id} ↔ ${sellOrder._id}`);
   
@@ -289,56 +290,9 @@ tradingService.on('orderMatched', (buyOrder, sellOrder, trades) => {
     orderId: sellOrder._id,
     trades
   });
-
-  // 🔗 TRIGGER BLOCKCHAIN EXECUTION (if needed)
-  trades.forEach(async (trade) => {
-    if (buyOrder.tradingMode === 'on-chain' || buyOrder.tradingMode === 'hybrid') {
-      try {
-        console.log(`🔗 Executing trade ${trade.tradeId} on blockchain...`);
-        
-        const result = await blockchainService.executeTradeOnChain({
-          tradeId: trade.tradeId,
-          buyOrderId: buyOrder._id.toString(),
-          sellOrderId: sellOrder._id.toString(),
-          buyerAddress: buyOrder.walletAddress,
-          sellerAddress: sellOrder.walletAddress,
-          tokenA: '0x0000000000000000000000000000000000000000', // TODO: Get from config
-          tokenB: '0x0000000000000000000000000000000000000000', // TODO: Get from config
-          amountA: trade.amount.toString(),
-          amountB: (trade.amount * trade.price).toString(),
-          price: trade.price
-        });
-
-        if (result.success) {
-          console.log(`✅ Trade ${trade.tradeId} executed on blockchain: ${result.txHash}`);
-          
-          // Update trade with blockchain data
-          // TODO: Save to database
-          
-          // Emit blockchain confirmation
-          io.emit('trade_blockchain_confirmed', {
-            tradeId: trade.tradeId,
-            txHash: result.txHash,
-            blockNumber: result.blockNumber,
-            gasUsed: result.gasUsed
-          });
-        } else {
-          console.error(`❌ Blockchain execution failed for trade ${trade.tradeId}: ${result.error}`);
-          
-          // Emit error
-          io.emit('trade_blockchain_failed', {
-            tradeId: trade.tradeId,
-            error: result.error
-          });
-        }
-      } catch (error: any) {
-        console.error(`❌ Error executing trade ${trade.tradeId} on blockchain:`, error);
-      }
-    }
-  });
 });
 
-// ----- 6) BINANCE WEBSOCKET (existing code) -----
+// ----- 6) BINANCE WEBSOCKET -----
 const activeSubs = new Set<string>();
 const latestPrices: Record<string, number> = {};
 const socketsBinance: Record<string, WebSocket> = {};
@@ -378,7 +332,7 @@ function connectBinance(symbol: string) {
   });
 }
 
-// Fallback na CoinGecko (existing code)
+// Fallback to CoinGecko
 setInterval(async () => {
   if (!activeSubs.size) return;
   const needs = Array.from(activeSubs).filter(id => {
@@ -426,7 +380,7 @@ httpServer.listen(PORT, async () => {
     // Setup periodic blockchain health checks
     setInterval(async () => {
       const health = await blockchainService.healthCheck();
-      if (!health.healthy) {
+      if (!health.healthy && !health.mockMode) {
         console.warn('⚠️  Blockchain service unhealthy:', health.error);
       }
     }, 30000); // Check every 30 seconds
