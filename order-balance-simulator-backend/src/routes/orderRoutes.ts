@@ -1,256 +1,207 @@
-// routes/orderRoutes.ts - FIXED VERSION
-import { Router } from 'express';
-import { body, query, param } from 'express-validator';
+// order-balance-simulator-backend/src/routes/orderRoutes.ts - FINAL FIXED VERSION
+
+import { Router, Request, Response } from 'express';
+import { body, validationResult } from 'express-validator';
 import { OrderController } from '../controllers/orderController';
 import { tradingService } from '../services/tradingServices';
 
 const router = Router();
 
-// Validation rules for creating orders
+const validateRequest = (req: Request, res: Response, next: Function) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation errors',
+      errors: errors.array()
+    });
+  }
+  next();
+};
+
+// 🔧 KOMPLETNO NOVA VALIDACIJA
 const createOrderValidation = [
   body('pair')
     .notEmpty()
     .withMessage('Trading pair is required')
     .isString()
-    .withMessage('Pair must be a string')
-    .isLength({ min: 6, max: 12 })
-    .withMessage('Pair must be between 6-12 characters'),
-    
+    .withMessage('Pair must be a string'),
+
   body('type')
     .notEmpty()
     .withMessage('Order type is required')
     .isIn(['Limit Buy', 'Limit Sell', 'Market Buy', 'Market Sell'])
     .withMessage('Invalid order type'),
-    
+
+  // 🔧 KRITIČNA ISPRAVKA: Price validation
   body('price')
-    .isFloat({ min: 0.000001 })
-    .withMessage('Price must be a positive number'),
-    
+    .custom((value, { req }) => {
+      const orderType = req.body.type;
+      
+      console.log(`🔍 Validating price: "${value}" (type: ${typeof value}) for order: ${orderType}`);
+
+      // Za Market orders - price može biti bilo šta, ignorišemo ga
+      if (orderType === 'Market Buy' || orderType === 'Market Sell') {
+        console.log('✅ Market order - price validation skipped');
+        return true; // Uvek prošlemo validaciju za market orders
+      }
+
+      // Za Limit orders - price je obavezan i mora biti pozitivan
+      if (orderType === 'Limit Buy' || orderType === 'Limit Sell') {
+        if (value === undefined || value === null || value === '') {
+          throw new Error('Price is required for limit orders');
+        }
+        
+        const numValue = Number(value);
+        if (isNaN(numValue) || numValue <= 0) {
+          throw new Error('Price must be a positive number for limit orders');
+        }
+        
+        console.log('✅ Limit order price validation passed:', numValue);
+      }
+
+      return true;
+    }),
+
   body('amount')
     .isFloat({ min: 0.000001 })
     .withMessage('Amount must be a positive number'),
-    
-  body('status')
+
+  body('walletAddress')
     .optional()
-    .isIn(['Pending', 'Filled', 'Cancelled'])
-    .withMessage('Invalid status'),
-    
-  body('no')
-    .optional()
-    .isInt({ min: 1 })
-    .withMessage('Order number must be a positive integer'),
-    
-  body('orderTime')
-    .optional()
-    .isISO8601()
-    .withMessage('Invalid date format')
+    .isLength({ min: 42, max: 42 })
+    .withMessage('Invalid wallet address')
 ];
 
-// Validation for updating orders
-const updateOrderValidation = [
-  param('id')
-    .isMongoId()
-    .withMessage('Invalid order ID'),
-    
-  body('pair')
-    .optional()
-    .isString()
-    .isLength({ min: 6, max: 12 }),
-    
-  body('type')
-    .optional()
-    .isIn(['Limit Buy', 'Limit Sell', 'Market Buy', 'Market Sell']),
-    
-  body('price')
-    .optional()
-    .isFloat({ min: 0.000001 }),
-    
-  body('amount')
-    .optional()
-    .isFloat({ min: 0.000001 }),
-    
-  body('status')
-    .optional()
-    .isIn(['Pending', 'Filled', 'Cancelled'])
-];
+// ===== KOMPLETNO NOVA CREATE ORDER LOGIKA =====
+router.post('/', createOrderValidation, validateRequest, async (req: Request, res: Response) => {
+  try {
+    const orderData = req.body;
 
-// Query validation for filtering
-const filterValidation = [
-  query('pair').optional().isString(),
-  query('status').optional().isIn(['Pending', 'Filled', 'Cancelled']),
-  query('type').optional().isIn(['Limit Buy', 'Limit Sell', 'Market Buy', 'Market Sell']),
-  query('page').optional().isInt({ min: 1 }),
-  query('limit').optional().isInt({ min: 1, max: 100 }),
-  query('sortBy').optional().isString(),
-  query('sortOrder').optional().isIn(['asc', 'desc'])
-];
+    console.log('📝 Raw order data received:', JSON.stringify(orderData, null, 2));
 
-// ===== BASIC ROUTES =====
-router.get('/', filterValidation, OrderController.getAllOrders);
+    // 🔧 KRITIČNA ISPRAVKA: Jednostavna logika za price
+    let finalPrice: number | undefined = undefined;
+
+    // Samo za Limit orders uzimamo cenu iz zahteva
+    if (orderData.type === 'Limit Buy' || orderData.type === 'Limit Sell') {
+      const numPrice = Number(orderData.price);
+      if (isNaN(numPrice) || numPrice <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid price for limit order'
+        });
+      }
+      finalPrice = numPrice;
+      console.log('💰 Limit order - using provided price:', finalPrice);
+    } else {
+      // Za Market orders - price ostaje undefined
+      // Trading service će sam da odredi market cenu
+      console.log('📈 Market order - price will be determined by market');
+    }
+
+    // Kreiraj order objekat za bazu
+    const dbOrder = {
+      pair: orderData.pair?.toUpperCase(),
+      type: orderData.type,
+      price: finalPrice, // undefined za market, broj za limit
+      amount: Number(orderData.amount),
+      walletAddress: orderData.walletAddress,
+      status: 'Pending'
+    };
+
+    console.log('💾 Order for database:', JSON.stringify(dbOrder, null, 2));
+
+    // Pozovi trading service
+    const result = await tradingService.placeOrder(dbOrder);
+
+    if (result.success) {
+      console.log('✅ Order placed successfully:', result.data);
+
+      res.status(201).json({
+        success: true,
+        data: result.data,
+        message: result.message || 'Order created successfully',
+        trades: result.data?.trades || []
+      });
+    } else {
+      console.error('❌ Trading service error:', result);
+      res.status(400).json({
+        success: false,
+        message: result.message || 'Failed to place order',
+        error: result.error
+      });
+    }
+
+  } catch (error: any) {
+    console.error('❌ Route error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// ===== OSTALE RUTE (POSTOJEĆE) =====
+router.get('/orderbook/:pair', async (req: Request, res: Response) => {
+  try {
+    const { pair } = req.params;
+    const orderBook = tradingService.getOrderBook(pair.toUpperCase());
+    res.json({ success: true, data: orderBook });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.get('/trades/:pair', async (req: Request, res: Response) => {
+  try {
+    const { pair } = req.params;
+    const { limit = 50 } = req.query;
+    const trades = tradingService.getRecentTrades(pair.toUpperCase(), Number(limit));
+    res.json({ success: true, data: trades });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.get('/', OrderController.getAllOrders);
 router.get('/stats/summary', OrderController.getOrdersSummary);
 router.get('/stats/volume/:pair', OrderController.getVolumeStats);
 router.get('/number/:no', OrderController.getOrderByNumber);
 router.get('/:id', OrderController.getOrderById);
+router.put('/:id', OrderController.updateOrder);
 
-// ✅ FIXED: Use OrderController instead of non-existent EnhancedOrderController
-router.post('/', createOrderValidation, OrderController.createOrder);
-router.post('/bulk', OrderController.createBulkOrders);
+router.patch('/:id/cancel', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const result = await tradingService.cancelOrder(id, req.body.pair);
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
-router.put('/:id', updateOrderValidation, OrderController.updateOrder);
 router.patch('/:id/fill', OrderController.fillOrder);
 router.delete('/:id', OrderController.deleteOrder);
 
-// ===== ENHANCED TRADING ROUTES =====
-// Create enhanced order controller object with methods from trading service
-const EnhancedOrderController = {
-  // Cancel order using trading service
-  cancelOrder: async (req: any, res: any) => {
-    try {
-      const { id } = req.params;
-      const { pair } = req.query;
-      
-      if (!pair) {
-        return res.status(400).json({
-          success: false,
-          message: 'Trading pair is required for cancellation'
-        });
-      }
-      
-      const result = await tradingService.cancelOrder(id, pair as string);
-      
-      if (result.success) {
-        res.json({
-          success: true,
-          message: result.message
-        });
-      } else {
-        res.status(400).json({
-          success: false,
-          message: result.message
-        });
-      }
-    } catch (error: any) {
-      console.error('❌ Cancel order error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to cancel order',
-        error: error.message
-      });
-    }
-  },
-
-  // Get order book
-  getOrderBook: async (req: any, res: any) => {
-    try {
-      const { pair } = req.params;
-      const orderBook = tradingService.getOrderBook(pair);
-      
-      if (!orderBook) {
-        return res.status(404).json({
-          success: false,
-          message: `Order book not found for pair ${pair}`
-        });
-      }
-      
-      res.json({
-        success: true,
-        data: {
-          pair,
-          bids: orderBook.bids,
-          asks: orderBook.asks,
-          timestamp: new Date().toISOString()
-        }
-      });
-    } catch (error: any) {
-      console.error('❌ Get order book error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to get order book',
-        error: error.message
-      });
-    }
-  },
-
-  // Get recent trades
-  getRecentTrades: async (req: any, res: any) => {
-    try {
-      const { pair } = req.params;
-      const limit = parseInt(req.query.limit as string) || 50;
-      
-      const trades = tradingService.getRecentTrades(pair, limit);
-      
-      res.json({
-        success: true,
-        data: {
-          pair,
-          trades,
-          count: trades.length,
-          timestamp: new Date().toISOString()
-        }
-      });
-    } catch (error: any) {
-      console.error('❌ Get recent trades error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to get recent trades',
-        error: error.message
-      });
-    }
-  },
-
-  // Get market data
-  getMarketData: async (req: any, res: any) => {
-    try {
-      const { pair } = req.params;
-      const marketData = tradingService.getMarketData(pair);
-      
-      res.json({
-        success: true,
-        data: {
-          ...marketData,
-          pair,
-          timestamp: new Date().toISOString()
-        }
-      });
-    } catch (error: any) {
-      console.error('❌ Get market data error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to get market data',
-        error: error.message
-      });
-    }
-  },
-
-  // Get active pairs
-  getActivePairs: async (req: any, res: any) => {
-    try {
-      const activePairs = tradingService.getActivePairs();
-      
-      res.json({
-        success: true,
-        data: {
-          pairs: activePairs,
-          count: activePairs.length,
-          timestamp: new Date().toISOString()
-        }
-      });
-    } catch (error: any) {
-      console.error('❌ Get active pairs error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to get active pairs',
-        error: error.message
-      });
-    }
+router.get('/market/:pair', async (req: Request, res: Response) => {
+  try {
+    const { pair } = req.params;
+    const marketData = tradingService.getMarketData(pair.toUpperCase());
+    res.json({ success: true, data: marketData });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
   }
-};
+});
 
-// ✅ NOW THESE ROUTES WILL WORK
-router.patch('/:id/cancel', EnhancedOrderController.cancelOrder);
-router.get('/orderbook/:pair', EnhancedOrderController.getOrderBook);
-router.get('/trades/:pair', EnhancedOrderController.getRecentTrades);
-router.get('/market/:pair', EnhancedOrderController.getMarketData);
-router.get('/active-pairs', EnhancedOrderController.getActivePairs);
+router.get('/pairs', async (req: Request, res: Response) => {
+  try {
+    const pairs = tradingService.getActivePairs();
+    res.json({ success: true, data: pairs });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 export default router;
