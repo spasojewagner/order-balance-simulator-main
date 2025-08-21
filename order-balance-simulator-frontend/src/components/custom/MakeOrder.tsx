@@ -42,6 +42,7 @@ const MakeOrder: React.FC<MakeOrderProps> = ({
 
     // Get wallet state from Redux
     const { walletConnected, walletAddress } = useAppSelector((state) => state.app);
+  
 
     const isBuyOrder = buttonLabel.toLowerCase().includes('buy');
 

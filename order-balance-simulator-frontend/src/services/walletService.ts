@@ -1,4 +1,4 @@
-// src/services/walletService.ts - COMPLETE BLOCKCHAIN INTEGRATION
+// src/services/walletService.ts - ФИНАЛНА ВЕРЗИЈА СА LOCALHOST
 
 import Web3 from 'web3';
 
@@ -10,27 +10,7 @@ declare global {
   }
 }
 
-export interface TradeSignatureData {
-  tradeId: string;
-  buyer: string;
-  seller: string;
-  tokenA: string;
-  tokenB: string;
-  amountA: string;
-  amountB: string;
-  deadline: number;
-  nonce: number;
-}
-
-export interface WalletBalance {
-  token: string;
-  balance: string;
-  decimals: number;
-  symbol: string;
-  formatted: string;
-}
-
-export interface NetworkConfig {
+export interface NetworkInfo {
   name: string;
   rpcUrl?: string;
   blockExplorerUrl?: string;
@@ -41,23 +21,15 @@ export interface NetworkConfig {
   };
 }
 
-export interface OrderSignatureData {
-  orderId: string;
-  userAddress: string;
-  tokenA: string;
-  tokenB: string;
-  amountA: string;
-  amountB: string;
-  price: string;
-  orderType: 'buy' | 'sell';
-  timestamp: number;
-  nonce: number;
-}
-
 // ===== CONSTANTS =====
 
-// Network configurations
-export const SUPPORTED_NETWORKS: Record<number, NetworkConfig> = {
+// Network configurations - ДОДАТ LOCALHOST НА ПОЧЕТАК
+export const SUPPORTED_NETWORKS: Record<number, NetworkInfo> = {
+  31337: {
+    name: 'Localhost 8545',
+    rpcUrl: 'http://127.0.0.1:8545',
+    nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 }
+  },
   1: {
     name: 'Ethereum Mainnet',
     rpcUrl: 'https://eth-mainnet.alchemyapi.io/v2/YOUR_KEY',
@@ -90,9 +62,10 @@ export const SUPPORTED_NETWORKS: Record<number, NetworkConfig> = {
   }
 };
 
-// Contract addresses (UPDATE AFTER DEPLOYMENT)
+// Contract addresses - АЖУРИРАНО СА ТВОЈОМ АДРЕСОМ
 export const CONTRACT_ADDRESSES = {
   DEX_SETTLEMENT: {
+    31337: '0x5FbDB2315678afecb367f032d93F642f64180aa3', // ✅ ТВОЈ DEPLOYED CONTRACT
     1: '0x0000000000000000000000000000000000000000', // Mainnet
     5: '0x0000000000000000000000000000000000000000', // Goerli
     11155111: '0x0000000000000000000000000000000000000000', // Sepolia
@@ -101,30 +74,21 @@ export const CONTRACT_ADDRESSES = {
   },
   TOKENS: {
     USDT: {
-      1: '0xdAC17F958D2ee523a2206206994597C13D831ec7', // Real USDT Mainnet
-      5: '0x0000000000000000000000000000000000000000', // Test USDT Goerli
-      11155111: '0x0000000000000000000000000000000000000000', // Test USDT Sepolia
-      137: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F', // Real USDT Polygon
-      80001: '0x0000000000000000000000000000000000000000' // Test USDT Mumbai
+      31337: '0x0000000000000000000000000000000000000000', // Local mock
+      1: '0xdAC17F958D2ee523a2206206994597C13D831ec7', // Real USDT
+      5: '0x0000000000000000000000000000000000000000', // Mock USDT
+      11155111: '0x0000000000000000000000000000000000000000' // Mock USDT
     },
     USDC: {
-      1: '0xA0b86a33E6417eFb1C6088D5EB6e9F83f9D0Dc8e', // Real USDC Mainnet
-      5: '0x0000000000000000000000000000000000000000', // Test USDC Goerli
-      11155111: '0x0000000000000000000000000000000000000000', // Test USDC Sepolia
-      137: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', // Real USDC Polygon
-      80001: '0x0000000000000000000000000000000000000000' // Test USDC Mumbai
-    },
-    WETH: {
-      1: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', // WETH Mainnet
-      5: '0xB4FBF271143F4FBf7B91A5ded31805e42b2208d6', // WETH Goerli
-      11155111: '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14', // WETH Sepolia
-      137: '0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619', // WETH Polygon
-      80001: '0x9c3C9283D3e44854697Cd22D3Faa240Cfb032889' // WETH Mumbai
+      31337: '0x0000000000000000000000000000000000000000', // Local mock
+      1: '0xA0b86991c60B86a33E6417eFb1C6088D5EB6e9F83f9D0Dc8e', // Real USDC
+      5: '0x0000000000000000000000000000000000000000', // Mock USDC
+      11155111: '0x0000000000000000000000000000000000000000' // Mock USDC
     }
   }
 };
 
-// ERC20 ABI (complete for balance and approve operations)
+// ERC20 ABI (minimal)
 const ERC20_ABI = [
   {
     "inputs": [{"internalType": "address", "name": "account", "type": "address"}],
@@ -141,13 +105,6 @@ const ERC20_ABI = [
     "type": "function"
   },
   {
-    "inputs": [],
-    "name": "symbol", 
-    "outputs": [{"internalType": "string", "name": "", "type": "string"}],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
     "inputs": [
       {"internalType": "address", "name": "spender", "type": "address"},
       {"internalType": "uint256", "name": "amount", "type": "uint256"}
@@ -156,20 +113,10 @@ const ERC20_ABI = [
     "outputs": [{"internalType": "bool", "name": "", "type": "bool"}],
     "stateMutability": "nonpayable",
     "type": "function"
-  },
-  {
-    "inputs": [
-      {"internalType": "address", "name": "owner", "type": "address"},
-      {"internalType": "address", "name": "spender", "type": "address"}
-    ],
-    "name": "allowance",
-    "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-    "stateMutability": "view",
-    "type": "function"
   }
 ];
 
-// DEX Contract ABI (expanded for trading operations)
+// DEX Contract ABI (minimal)
 const DEX_CONTRACT_ABI = [
   {
     "inputs": [
@@ -179,26 +126,6 @@ const DEX_CONTRACT_ABI = [
     "name": "getBalance",
     "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
     "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {"internalType": "address", "name": "_token", "type": "address"},
-      {"internalType": "uint256", "name": "_amount", "type": "uint256"}
-    ],
-    "name": "deposit",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {"internalType": "address", "name": "_token", "type": "address"},
-      {"internalType": "uint256", "name": "_amount", "type": "uint256"}
-    ],
-    "name": "withdraw",
-    "outputs": [],
-    "stateMutability": "nonpayable",
     "type": "function"
   }
 ];
@@ -223,8 +150,6 @@ export class WalletService {
         return { success: false, error: 'MetaMask not installed' };
       }
 
-      console.log('🔗 Connecting to MetaMask...');
-
       // Request account access
       const accounts = await window.ethereum.request({ 
         method: 'eth_requestAccounts' 
@@ -241,13 +166,10 @@ export class WalletService {
       const chainId = await this.web3.eth.getChainId();
       this.networkId = Number(chainId);
 
-      // Setup event listeners
-      this.setupEventListeners();
-
-      console.log('✅ MetaMask connected:', {
+      console.log('✅ Wallet connected:', {
         account: this.account,
         networkId: this.networkId,
-        networkName: this.getNetworkName()
+        networkName: SUPPORTED_NETWORKS[this.networkId]?.name || 'Unknown'
       });
 
       return {
@@ -257,62 +179,16 @@ export class WalletService {
       };
 
     } catch (error: any) {
-      console.error('❌ Wallet connection failed:', error);
+      console.error('Wallet connection failed:', error);
       return { success: false, error: error.message };
     }
   }
 
   disconnect(): void {
-    console.log('🔌 Disconnecting wallet...');
-    
     this.web3 = null;
     this.account = null;
     this.networkId = null;
-    
-    // Remove event listeners
-    if (window.ethereum) {
-      window.ethereum.removeAllListeners?.('accountsChanged');
-      window.ethereum.removeAllListeners?.('chainChanged');
-      window.ethereum.removeAllListeners?.('disconnect');
-    }
-    
-    console.log('✅ Wallet disconnected');
-  }
-
-  private setupEventListeners(): void {
-    if (!window.ethereum) return;
-
-    console.log('👂 Setting up MetaMask event listeners...');
-
-    window.ethereum.on('accountsChanged', (accounts: string[]) => {
-      console.log('👤 Account changed:', accounts);
-      if (accounts.length === 0) {
-        this.disconnect();
-        // Dispatch custom event for components to handle
-        window.dispatchEvent(new CustomEvent('walletDisconnected'));
-      } else {
-        this.account = accounts[0];
-        // Dispatch custom event for components to handle
-        window.dispatchEvent(new CustomEvent('walletAccountChanged', { 
-          detail: { account: accounts[0] } 
-        }));
-      }
-    });
-
-    window.ethereum.on('chainChanged', (chainId: string) => {
-      const newNetworkId = parseInt(chainId, 16);
-      console.log('🌐 Network changed:', newNetworkId);
-      this.networkId = newNetworkId;
-      // Dispatch custom event for components to handle
-      window.dispatchEvent(new CustomEvent('walletNetworkChanged', { 
-        detail: { networkId: newNetworkId } 
-      }));
-    });
-
-    window.ethereum.on('disconnect', (error: any) => {
-      console.log('🔌 MetaMask disconnected:', error);
-      this.disconnect();
-    });
+    console.log('Wallet disconnected');
   }
 
   // ===== GETTERS =====
@@ -325,33 +201,8 @@ export class WalletService {
     return this.networkId;
   }
 
-  getNetworkName(): string {
-    if (!this.networkId) return 'Unknown';
-    return SUPPORTED_NETWORKS[this.networkId]?.name || `Network ${this.networkId}`;
-  }
-
   isConnected(): boolean {
     return !!(this.web3 && this.account);
-  }
-
-  getBlockExplorerUrl(): string {
-    if (!this.networkId) return '';
-    return SUPPORTED_NETWORKS[this.networkId]?.blockExplorerUrl || '';
-  }
-
-  // ===== TOKEN ADDRESS HELPERS =====
-
-  getTestTokenAddress(tokenSymbol: 'USDT' | 'USDC' | 'WETH', networkId: number): string {
-    const addresses = CONTRACT_ADDRESSES.TOKENS[tokenSymbol] as Record<number, string>;
-    return addresses[networkId] || '0x0000000000000000000000000000000000000000';
-  }
-
-  getDEXContractAddress(networkId?: number): string {
-    const network = networkId || this.networkId;
-    if (!network) return '0x0000000000000000000000000000000000000000';
-    
-    const addresses = CONTRACT_ADDRESSES.DEX_SETTLEMENT as Record<number, string>;
-    return addresses[network] || '0x0000000000000000000000000000000000000000';
   }
 
   // ===== BALANCE OPERATIONS =====
@@ -360,49 +211,30 @@ export class WalletService {
     balance: string;
     decimals: number;
     formatted: string;
-    symbol: string;
   }> {
     if (!this.web3) throw new Error('Wallet not connected');
     
     const account = userAddress || this.account;
     if (!account) throw new Error('No account available');
 
-    console.log(`💰 Getting token balance for ${tokenAddress} on account ${account}`);
-
-    const contract = new this.web3.eth.Contract(ERC20_ABI, tokenAddress);
-    
     try {
-      const [balance, decimals, symbol] = await Promise.all([
+      const contract = new this.web3.eth.Contract(ERC20_ABI, tokenAddress);
+      const [balance, decimals] = await Promise.all([
         contract.methods.balanceOf(account).call(),
-        contract.methods.decimals().call(),
-        contract.methods.symbol().call().catch(() => 'TOKEN')
+        contract.methods.decimals().call()
       ]);
 
-      // Convert from wei to readable format using actual decimals
       const divisor = Math.pow(10, Number(decimals));
       const formatted = (Number(balance) / divisor).toString();
 
-      console.log(`✅ Token balance loaded:`, {
-        symbol,
+      return {
         balance: balance.toString(),
         decimals: Number(decimals),
         formatted
-      });
-
-      return {
-        balance: balance.toString(),
-        decimals: Number(decimals),
-        formatted,
-        symbol: symbol.toString()
       };
     } catch (error) {
-      console.error('❌ Failed to get token balance:', error);
-      return {
-        balance: '0',
-        decimals: 18,
-        formatted: '0',
-        symbol: 'TOKEN'
-      };
+      console.error('Failed to get token balance:', error);
+      return { balance: '0', decimals: 18, formatted: '0' };
     }
   }
 
@@ -412,16 +244,12 @@ export class WalletService {
     const account = userAddress || this.account;
     if (!account) throw new Error('No account available');
 
-    console.log(`💰 Getting ETH balance for ${account}`);
-
     try {
       const balanceWei = await this.web3.eth.getBalance(account);
       const balanceEth = this.web3.utils.fromWei(balanceWei, 'ether');
-      
-      console.log(`✅ ETH balance: ${balanceEth}`);
       return balanceEth;
     } catch (error) {
-      console.error('❌ Failed to get ETH balance:', error);
+      console.error('Failed to get ETH balance:', error);
       return '0';
     }
   }
@@ -432,24 +260,20 @@ export class WalletService {
     const account = userAddress || this.account;
     if (!account) throw new Error('No account available');
 
-    const dexAddress = this.getDEXContractAddress();
+    const dexAddress = CONTRACT_ADDRESSES.DEX_SETTLEMENT[this.networkId as keyof typeof CONTRACT_ADDRESSES.DEX_SETTLEMENT];
     
     if (!dexAddress || dexAddress === '0x0000000000000000000000000000000000000000') {
-      console.warn('⚠️ DEX contract not deployed on this network');
+      console.warn('DEX contract not deployed on this network');
       return '0';
     }
-
-    console.log(`💰 Getting DEX balance for ${tokenAddress} on ${dexAddress}`);
 
     try {
       const dexContract = new this.web3.eth.Contract(DEX_CONTRACT_ABI, dexAddress);
       const balance = await dexContract.methods.getBalance(account, tokenAddress).call();
-      
       const balanceEth = this.web3.utils.fromWei(balance, 'ether');
-      console.log(`✅ DEX balance: ${balanceEth}`);
       return balanceEth;
     } catch (error) {
-      console.error('❌ Failed to get DEX balance:', error);
+      console.error('Failed to get DEX balance:', error);
       return '0';
     }
   }
@@ -459,85 +283,30 @@ export class WalletService {
   async signMessage(message: string): Promise<string> {
     if (!this.web3 || !this.account) throw new Error('Wallet not connected');
 
-    console.log('🔐 Signing message:', message);
-
     try {
       const signature = await this.web3.eth.personal.sign(message, this.account, '');
-      console.log('✅ Message signed successfully');
       return signature;
     } catch (error) {
-      console.error('❌ Message signing failed:', error);
+      console.error('Message signing failed:', error);
       throw error;
     }
   }
 
-  async signTradeData(tradeData: TradeSignatureData): Promise<string> {
-    if (!this.web3 || !this.account) throw new Error('Wallet not connected');
+  async signOrder(orderData: any): Promise<string> {
+    const message = `Sign order: ${JSON.stringify(orderData)}`;
+    return await this.signMessage(message);
+  }
 
-    console.log('🔐 Signing trade data:', tradeData);
-
-    // Create structured message for signing
-    const message = this.createTradeMessage(tradeData);
+  async signTradeData(tradeData: any): Promise<string> {
+    const message = `Trade: ${tradeData.tradeId} - ${tradeData.amountA} for ${tradeData.amountB}`;
     
     try {
       const signature = await this.signMessage(message);
-      console.log('✅ Trade data signed successfully');
       return signature;
     } catch (error) {
-      console.error('❌ Trade signing failed:', error);
+      console.error('Trade signing failed:', error);
       throw error;
     }
-  }
-
-  async signOrderData(orderData: OrderSignatureData): Promise<string> {
-    if (!this.web3 || !this.account) throw new Error('Wallet not connected');
-
-    console.log('🔐 Signing order data:', orderData);
-
-    // Create structured message for order signing
-    const message = this.createOrderMessage(orderData);
-    
-    try {
-      const signature = await this.signMessage(message);
-      console.log('✅ Order signed successfully');
-      return signature;
-    } catch (error) {
-      console.error('❌ Order signing failed:', error);
-      throw error;
-    }
-  }
-
-  private createTradeMessage(tradeData: TradeSignatureData): string {
-    return `DEXCHANGE TRADE AUTHORIZATION
-
-Trade ID: ${tradeData.tradeId}
-Buyer: ${tradeData.buyer}
-Seller: ${tradeData.seller}
-Token A: ${tradeData.tokenA}
-Token B: ${tradeData.tokenB}
-Amount A: ${tradeData.amountA}
-Amount B: ${tradeData.amountB}
-Deadline: ${new Date(tradeData.deadline * 1000).toISOString()}
-Nonce: ${tradeData.nonce}
-
-By signing this message, you authorize the execution of this trade.`;
-  }
-
-  private createOrderMessage(orderData: OrderSignatureData): string {
-    return `DEXCHANGE ORDER SIGNATURE
-
-Order ID: ${orderData.orderId}
-User: ${orderData.userAddress}
-Type: ${orderData.orderType.toUpperCase()} ORDER
-Token A: ${orderData.tokenA}
-Token B: ${orderData.tokenB}
-Amount A: ${orderData.amountA}
-Amount B: ${orderData.amountB}
-Price: ${orderData.price}
-Timestamp: ${new Date(orderData.timestamp).toISOString()}
-Nonce: ${orderData.nonce}
-
-By signing this message, you confirm this order creation.`;
   }
 
   // ===== TOKEN OPERATIONS =====
@@ -545,75 +314,18 @@ By signing this message, you confirm this order creation.`;
   async approveToken(tokenAddress: string, spenderAddress: string, amount: string): Promise<string> {
     if (!this.web3 || !this.account) throw new Error('Wallet not connected');
 
-    console.log('🔓 Approving token:', {
-      token: tokenAddress,
-      spender: spenderAddress,
-      amount
-    });
-
     try {
       const contract = new this.web3.eth.Contract(ERC20_ABI, tokenAddress);
-      
-      // Get token decimals for proper amount conversion
-      const decimals = await contract.methods.decimals().call();
-      const divisor = Math.pow(10, Number(decimals));
-      const amountWei = (parseFloat(amount) * divisor).toString();
+      const amountWei = this.web3.utils.toWei(amount, 'ether');
 
       const tx = await contract.methods.approve(spenderAddress, amountWei).send({
         from: this.account
       });
 
-      console.log('✅ Token approved, TX hash:', tx.transactionHash);
       return tx.transactionHash;
     } catch (error) {
-      console.error('❌ Token approval failed:', error);
+      console.error('Token approval failed:', error);
       throw error;
-    }
-  }
-
-  async checkAllowance(tokenAddress: string, spenderAddress: string): Promise<string> {
-    if (!this.web3 || !this.account) throw new Error('Wallet not connected');
-
-    try {
-      const contract = new this.web3.eth.Contract(ERC20_ABI, tokenAddress);
-      const allowance = await contract.methods.allowance(this.account, spenderAddress).call();
-      
-      return this.web3.utils.fromWei(allowance, 'ether');
-    } catch (error) {
-      console.error('❌ Failed to check allowance:', error);
-      return '0';
-    }
-  }
-
-  // ===== TRANSACTION OPERATIONS =====
-
-  async estimateGas(to: string, data: string, value = '0'): Promise<string> {
-    if (!this.web3 || !this.account) throw new Error('Wallet not connected');
-
-    try {
-      const gasEstimate = await this.web3.eth.estimateGas({
-        from: this.account,
-        to,
-        data,
-        value: this.web3.utils.toWei(value, 'ether')
-      });
-
-      return gasEstimate.toString();
-    } catch (error) {
-      console.error('❌ Gas estimation failed:', error);
-      return '21000'; // Default gas limit
-    }
-  }
-
-  async getCurrentGasPrice(): Promise<string> {
-    if (!this.web3) throw new Error('Wallet not connected');
-
-    try {
-      const gasPrice = await this.web3.eth.getGasPrice();
-      return gasPrice.toString();
-    } catch (error) {
-      console.error('❌ Failed to get gas price:', error);
-      return '20000000000'; // 20 gwei default
     }
   }
 
@@ -622,23 +334,19 @@ By signing this message, you confirm this order creation.`;
   async switchNetwork(networkId: number): Promise<boolean> {
     if (!window.ethereum) throw new Error('MetaMask not available');
 
-    console.log('🌐 Switching to network:', networkId);
-
     try {
       await window.ethereum.request({
         method: 'wallet_switchEthereumChain',
         params: [{ chainId: `0x${networkId.toString(16)}` }],
       });
       
-      console.log('✅ Network switched successfully');
+      this.networkId = networkId; // Ажурирај интерни networkId
       return true;
     } catch (error: any) {
-      console.log('⚠️ Network switch failed, trying to add network...');
       // If network doesn't exist, try to add it
       if (error.code === 4902) {
         return await this.addNetwork(networkId);
       }
-      console.error('❌ Network switch failed:', error);
       throw error;
     }
   }
@@ -648,8 +356,6 @@ By signing this message, you confirm this order creation.`;
 
     const network = SUPPORTED_NETWORKS[networkId];
     if (!network) throw new Error('Network not supported');
-
-    console.log('➕ Adding network:', network.name);
 
     try {
       await window.ethereum.request({
@@ -663,10 +369,10 @@ By signing this message, you confirm this order creation.`;
         }]
       });
       
-      console.log('✅ Network added successfully');
+      this.networkId = networkId; // Ажурирај интерни networkId
       return true;
     } catch (error) {
-      console.error('❌ Failed to add network:', error);
+      console.error('Failed to add network:', error);
       return false;
     }
   }
@@ -678,151 +384,38 @@ By signing this message, you confirm this order creation.`;
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   }
 
-  formatBalance(balance: string, decimals = 4): string {
-    const num = parseFloat(balance);
-    if (isNaN(num)) return '0';
-    return num.toFixed(decimals);
-  }
-
-  isValidAddress(address: string): boolean {
-    if (!this.web3 || !address) return false;
-    return this.web3.utils.isAddress(address);
-  }
-
   generateTradeId(): string {
     return `0x${Date.now().toString(16)}${Math.random().toString(16).slice(2, 8)}`;
   }
 
-  generateOrderId(): string {
-    return `order_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  }
-
-  generateNonce(): number {
-    return Date.now() + Math.floor(Math.random() * 1000);
-  }
-
-  // ===== BLOCKCHAIN VERIFICATION =====
-
-  async verifySignature(message: string, signature: string, expectedSigner: string): Promise<boolean> {
-    if (!this.web3) throw new Error('Wallet not connected');
-
-    try {
-      const recoveredAddress = await this.web3.eth.personal.ecRecover(message, signature);
-      return recoveredAddress.toLowerCase() === expectedSigner.toLowerCase();
-    } catch (error) {
-      console.error('❌ Signature verification failed:', error);
-      return false;
+  getTestTokenAddress(tokenSymbol: string, networkId: number): string {
+    // За localhost враћамо null адресе јер нема deployed токена
+    if (networkId === 31337) {
+      return '0x0000000000000000000000000000000000000000';
     }
-  }
-
-  async getTransactionReceipt(txHash: string): Promise<any> {
-    if (!this.web3) throw new Error('Wallet not connected');
-
-    try {
-      const receipt = await this.web3.eth.getTransactionReceipt(txHash);
-      return receipt;
-    } catch (error) {
-      console.error('❌ Failed to get transaction receipt:', error);
-      return null;
-    }
-  }
-
-  getTransactionUrl(txHash: string): string {
-    const baseUrl = this.getBlockExplorerUrl();
-    if (!baseUrl) return '';
-    return `${baseUrl}/tx/${txHash}`;
-  }
-
-  getAddressUrl(address: string): string {
-    const baseUrl = this.getBlockExplorerUrl();
-    if (!baseUrl) return '';
-    return `${baseUrl}/address/${address}`;
+    
+    const tokens = CONTRACT_ADDRESSES.TOKENS as any;
+    return tokens[tokenSymbol]?.[networkId] || '0x0000000000000000000000000000000000000000';
   }
 
   // ===== ERROR HANDLING =====
 
   handleError(error: any): string {
-    console.error('🚨 Wallet error:', error);
+    console.error('Wallet error:', error);
 
-    // User rejection errors
-    if (error.code === 4001 || error.message?.includes('User denied')) {
+    if (error.code === 4001) {
       return 'Transaction rejected by user';
     }
     
-    // Network/RPC errors
     if (error.code === -32603) {
       return 'Network error - please try again';
     }
     
-    // Gas-related errors
     if (error.message?.includes('insufficient funds')) {
-      return 'Insufficient funds for transaction + gas fees';
+      return 'Insufficient funds for transaction';
     }
     
-    if (error.message?.includes('gas')) {
-      return 'Gas estimation failed - transaction may fail';
-    }
-    
-    // Contract errors
-    if (error.message?.includes('execution reverted')) {
-      return 'Transaction failed - please check your inputs';
-    }
-    
-    // Network switch errors
-    if (error.code === 4902) {
-      return 'Network not found in MetaMask';
-    }
-    
-    // Connection errors
-    if (error.message?.includes('Not connected')) {
-      return 'Please connect your wallet first';
-    }
-    
-    // Generic fallback
-    return error.message || 'Unknown blockchain error occurred';
-  }
-
-  // ===== BALANCE VALIDATION =====
-
-  async validateBalance(tokenAddress: string, requiredAmount: string, userAddress?: string): Promise<{
-    valid: boolean;
-    currentBalance: string;
-    error?: string;
-  }> {
-    try {
-      const account = userAddress || this.account;
-      if (!account) {
-        return { valid: false, currentBalance: '0', error: 'No account connected' };
-      }
-
-      let currentBalance = '0';
-      
-      if (tokenAddress === '0x0000000000000000000000000000000000000000') {
-        // ETH balance
-        currentBalance = await this.getETHBalance(account);
-      } else {
-        // Token balance
-        const tokenBalance = await this.getTokenBalance(tokenAddress, account);
-        currentBalance = tokenBalance.formatted;
-      }
-
-      const required = parseFloat(requiredAmount);
-      const current = parseFloat(currentBalance);
-
-      return {
-        valid: current >= required,
-        currentBalance,
-        error: current < required ? `Insufficient balance. Required: ${required}, Available: ${current}` : undefined
-      };
-
-    } catch (error) {
-      console.error('❌ Balance validation failed:', error);
-      return {
-        valid: false,
-        currentBalance: '0',
-        error: 'Failed to check balance'
-      };
-    }
+    return error.message || 'Unknown error occurred';
   }
 }
 
