@@ -1,4 +1,4 @@
-// src/components/wallet-connect/WalletConnect.tsx - ENHANCED VERSION
+// src/components/wallet-connect/WalletConnect.tsx - ENHANCED WITH BLOCKCHAIN INTEGRATION
 
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useAppSelector, useAppDispatch } from '../../store';
@@ -80,8 +80,39 @@ const WalletConnect: React.FC<WalletConnectProps> = ({
         localStorage.setItem('walletConnected', 'true');
         localStorage.setItem('walletAddress', result.account);
 
-        // Load balances
-        await loadTokenBalances();
+        // Setup trade execute function for signature flow
+        if (onTradeExecute) {
+          onTradeExecute.current = async (orderData: any) => {
+            try {
+              console.log('🔐 Signing order:', orderData);
+              
+              // Create signature data
+              const signatureData = {
+                tradeId: orderData.tradeId || walletService.generateTradeId(),
+                buyer: orderData.type === 'buy' ? result.account : orderData.counterpartyAddress,
+                seller: orderData.type === 'sell' ? result.account : orderData.counterpartyAddress,
+                tokenA: orderData.tokenA || '0x0000000000000000000000000000000000000000',
+                tokenB: orderData.tokenB || '0x0000000000000000000000000000000000000000',
+                amountA: orderData.quantity.toString(),
+                amountB: (orderData.quantity * orderData.price).toString(),
+                deadline: Math.floor(Date.now() / 1000) + 3600, // 1 hour
+                nonce: Date.now()
+              };
+
+              // Sign the trade data
+              const signature = await walletService.signTradeData(signatureData);
+              console.log('✅ Order signed:', signature);
+
+              return signature;
+            } catch (error) {
+              console.error('❌ Order signing failed:', error);
+              throw error;
+            }
+          };
+        }
+
+        // Load balances from blockchain
+        await loadBlockchainBalances();
 
         console.log('✅ Wallet connected:', {
           address: result.account,
@@ -99,7 +130,7 @@ const WalletConnect: React.FC<WalletConnectProps> = ({
     } finally {
       setIsConnecting(false);
     }
-  }, [isMetaMaskInstalled, dispatch]);
+  }, [isMetaMaskInstalled, dispatch, onTradeExecute]);
 
   const disconnectWallet = useCallback((): void => {
     walletService.disconnect();
@@ -114,91 +145,136 @@ const WalletConnect: React.FC<WalletConnectProps> = ({
     localStorage.removeItem('walletConnected');
     localStorage.removeItem('walletAddress');
     
+    // Clear trade execute function
+    if (onTradeExecute) {
+      onTradeExecute.current = null;
+    }
+    
     setConnectionError('');
     console.log('🔌 Wallet disconnected');
-  }, [dispatch]);
+  }, [dispatch, onTradeExecute]);
 
-  // ===== BALANCE MANAGEMENT =====
+  // ===== BLOCKCHAIN BALANCE MANAGEMENT =====
 
-  const loadTokenBalances = useCallback(async (): Promise<void> => {
-    if (!walletConnected || !walletAddress) return;
+  const loadBlockchainBalances = useCallback(async (): Promise<void> => {
+    if (!walletConnected || !walletAddress || !networkId) return;
 
     try {
       setBalanceLoading(true);
+      console.log('💰 Loading blockchain balances for:', walletAddress);
 
-      // Get ETH balance
-      const ethBalance = await walletService.getETHBalance();
+      // Get ETH/native token balance
+      const ethBalance = await walletService.getETHBalance(walletAddress);
       console.log('💰 ETH Balance:', ethBalance);
 
-      // Mock token balances for now (replace with real token addresses)
-      const mockTokenA = '0x0000000000000000000000000000000000000000';
-      const mockTokenB = '0x0000000000000000000000000000000000000000';
-
+      // Get token balances from blockchain
       let tokenABalance = 0;
       let tokenBBalance = 0;
 
-      // Try to get real token balances if addresses are configured
       try {
-        if (mockTokenA !== '0x0000000000000000000000000000000000000000') {
-          const balanceA = await walletService.getTokenBalance(mockTokenA);
+        // Try to get real token addresses from currentSymbol or use test tokens
+        const tokenAAddress = currentSymbol?.tokenAAddress || 
+          walletService.getTestTokenAddress('USDC', networkId);
+        const tokenBAddress = currentSymbol?.tokenBAddress || 
+          walletService.getTestTokenAddress('USDT', networkId);
+
+        if (tokenAAddress && tokenAAddress !== '0x0000000000000000000000000000000000000000') {
+          const balanceA = await walletService.getTokenBalance(tokenAAddress, walletAddress);
           tokenABalance = parseFloat(balanceA.formatted);
+          console.log('💰 Token A Balance:', tokenABalance, currentSymbol?.coinA || 'TokenA');
         } else {
-          // Mock balance for testing
-          tokenABalance = Math.random() * 1000;
+          console.warn('⚠️ Token A address not configured, using mock balance');
+          tokenABalance = 1000 + Math.random() * 9000; // Mock 1000-10000
         }
 
-        if (mockTokenB !== '0x0000000000000000000000000000000000000000') {
-          const balanceB = await walletService.getTokenBalance(mockTokenB);
+        if (tokenBAddress && tokenBAddress !== '0x0000000000000000000000000000000000000000') {
+          const balanceB = await walletService.getTokenBalance(tokenBAddress, walletAddress);
           tokenBBalance = parseFloat(balanceB.formatted);
+          console.log('💰 Token B Balance:', tokenBBalance, currentSymbol?.coinB || 'TokenB');
         } else {
-          // Mock balance for testing  
-          tokenBBalance = Math.random() * 10000;
+          console.warn('⚠️ Token B address not configured, using mock balance');
+          tokenBBalance = 10000 + Math.random() * 90000; // Mock 10000-100000
         }
-      } catch (error) {
-        console.warn('Failed to load token balances, using mock data:', error);
-        tokenABalance = Math.random() * 1000;
-        tokenBBalance = Math.random() * 10000;
+
+        // Also check DEX contract balances (for deposited tokens)
+        try {
+          const dexBalanceA = await walletService.getDEXBalance(tokenAAddress || '0x0', walletAddress);
+          const dexBalanceB = await walletService.getDEXBalance(tokenBAddress || '0x0', walletAddress);
+          
+          if (parseFloat(dexBalanceA) > 0 || parseFloat(dexBalanceB) > 0) {
+            console.log('💰 DEX Balances:', {
+              tokenA: dexBalanceA,
+              tokenB: dexBalanceB
+            });
+            // Add DEX balances to wallet balances
+            tokenABalance += parseFloat(dexBalanceA);
+            tokenBBalance += parseFloat(dexBalanceB);
+          }
+        } catch (dexError) {
+          console.warn('⚠️ Could not load DEX balances (contract not deployed?)');
+        }
+
+      } catch (tokenError) {
+        console.error('❌ Failed to load token balances from blockchain:', tokenError);
+        // Fallback to mock balances for demo
+        tokenABalance = 5000 + Math.random() * 5000;
+        tokenBBalance = 50000 + Math.random() * 50000;
+        console.log('🎭 Using mock balances for demo');
       }
 
-      // Update Redux store
+      // Update Redux store with blockchain balances
       dispatch(setBalance1(tokenABalance));
       dispatch(setBalance2(tokenBBalance));
 
-      console.log('💰 Token balances loaded:', {
-        tokenA: tokenABalance.toFixed(4),
-        tokenB: tokenBBalance.toFixed(4),
-        eth: parseFloat(ethBalance).toFixed(4)
+      console.log('✅ Blockchain balances loaded:', {
+        [currentSymbol?.coinA || 'TokenA']: tokenABalance.toFixed(4),
+        [currentSymbol?.coinB || 'TokenB']: tokenBBalance.toFixed(4),
+        ETH: parseFloat(ethBalance).toFixed(4)
       });
 
     } catch (error) {
-      console.error('Error loading token balances:', error);
+      console.error('❌ Error loading blockchain balances:', error);
+      // Keep existing balances on error
     } finally {
       setBalanceLoading(false);
     }
-  }, [walletConnected, walletAddress, dispatch]);
+  }, [walletConnected, walletAddress, networkId, currentSymbol, dispatch]);
 
   // ===== NETWORK OPERATIONS =====
 
   const switchNetwork = useCallback(async (targetNetworkId: number): Promise<void> => {
     try {
+      setBalanceLoading(true);
       const success = await walletService.switchNetwork(targetNetworkId);
       if (success) {
         dispatch(setNetworkId(targetNetworkId));
         dispatch(setNetworkName(SUPPORTED_NETWORKS[targetNetworkId]?.name || 'Unknown'));
+        
+        // Reload balances on new network
+        setTimeout(() => {
+          loadBlockchainBalances();
+        }, 1000);
+        
         console.log('🌐 Network switched to:', SUPPORTED_NETWORKS[targetNetworkId]?.name);
       }
     } catch (error: any) {
       console.error('Failed to switch network:', error);
       setConnectionError('Failed to switch network');
+    } finally {
+      setBalanceLoading(false);
     }
-  }, [dispatch]);
+  }, [dispatch, loadBlockchainBalances]);
 
   // ===== EFFECTS =====
 
   // Auto-connect if previously connected
   useEffect(() => {
     const autoConnect = async () => {
-      if (localStorage.getItem('walletConnected') === 'true' && isMetaMaskInstalled) {
+      const wasConnected = localStorage.getItem('walletConnected') === 'true';
+      const savedAddress = localStorage.getItem('walletAddress');
+      
+      if (wasConnected && savedAddress && isMetaMaskInstalled) {
+        console.log('🔄 Auto-connecting wallet...');
         await connectWallet();
       }
     };
@@ -206,12 +282,45 @@ const WalletConnect: React.FC<WalletConnectProps> = ({
     autoConnect();
   }, [connectWallet, isMetaMaskInstalled]);
 
-  // Load balances when connected or symbol changes
+  // Reload balances when connected, network changes, or symbol changes
   useEffect(() => {
-    if (walletConnected && walletAddress) {
-      loadTokenBalances();
+    if (walletConnected && walletAddress && networkId) {
+      console.log('🔄 Reloading balances due to state change...');
+      loadBlockchainBalances();
     }
-  }, [walletConnected, walletAddress, currentSymbol, loadTokenBalances]);
+  }, [walletConnected, walletAddress, networkId, currentSymbol, loadBlockchainBalances]);
+
+  // Listen for MetaMask account/network changes
+  useEffect(() => {
+    if (!window.ethereum) return;
+
+    const handleAccountsChanged = (accounts: string[]) => {
+      console.log('👤 Accounts changed:', accounts);
+      if (accounts.length === 0) {
+        disconnectWallet();
+      } else if (accounts[0] !== walletAddress) {
+        dispatch(setWalletAddress(accounts[0]));
+        localStorage.setItem('walletAddress', accounts[0]);
+        loadBlockchainBalances();
+      }
+    };
+
+    const handleChainChanged = (chainId: string) => {
+      const newNetworkId = parseInt(chainId, 16);
+      console.log('🌐 Chain changed:', newNetworkId);
+      dispatch(setNetworkId(newNetworkId));
+      dispatch(setNetworkName(SUPPORTED_NETWORKS[newNetworkId]?.name || 'Unknown'));
+      loadBlockchainBalances();
+    };
+
+    window.ethereum.on('accountsChanged', handleAccountsChanged);
+    window.ethereum.on('chainChanged', handleChainChanged);
+
+    return () => {
+      window.ethereum?.removeListener('accountsChanged', handleAccountsChanged);
+      window.ethereum?.removeListener('chainChanged', handleChainChanged);
+    };
+  }, [dispatch, walletAddress, loadBlockchainBalances, disconnectWallet]);
 
   // ===== RENDER HELPERS =====
 
@@ -256,36 +365,53 @@ const WalletConnect: React.FC<WalletConnectProps> = ({
   }
 
   return (
-    <div className="flex items-center gap-4">
+    <div className="flex items-center gap-4 flex-wrap">
       {walletConnected && walletAddress ? (
         <>
           {/* Connected State */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             {/* Network Badge */}
-            <div className={`px-2 py-1 rounded text-xs ${
+            <div className={`px-2 py-1 rounded text-xs flex items-center gap-1 ${
               isNetworkSupported 
                 ? 'bg-green-600 text-white' 
                 : 'bg-red-600 text-white'
             }`}>
+              {!isNetworkSupported && <span>⚠️</span>}
               {currentNetwork?.name || `Network ${networkId}`}
             </div>
 
             {/* Address Display */}
-            <div className="text-sm text-gray-300">
+            <div className="text-sm text-gray-300 font-mono">
               {walletService.formatAddress(walletAddress)}
             </div>
 
             {/* Balance Display */}
             <div className="text-xs text-gray-400">
               {balanceLoading ? (
-                <span>Loading...</span>
+                <span className="flex items-center gap-1">
+                  <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="m4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  Loading...
+                </span>
               ) : (
-                <span>
-                  {balance1.toFixed(2)} {currentSymbol?.coinA || 'TokenA'} | 
+                <span className="whitespace-nowrap">
+                  {balance1.toFixed(2)} {currentSymbol?.coinA || 'TokenA'} | {' '}
                   {balance2.toFixed(2)} {currentSymbol?.coinB || 'TokenB'}
                 </span>
               )}
             </div>
+
+            {/* Refresh Balances Button */}
+            <button
+              onClick={loadBlockchainBalances}
+              disabled={balanceLoading}
+              className="px-2 py-1 bg-gray-600 hover:bg-gray-700 text-white text-xs rounded transition-colors disabled:opacity-50"
+              title="Refresh blockchain balances"
+            >
+              {balanceLoading ? '⟳' : '↻'}
+            </button>
 
             {/* Disconnect Button */}
             <button
@@ -325,22 +451,10 @@ const WalletConnect: React.FC<WalletConnectProps> = ({
       {showNetworkSwitch && networkId && !isNetworkSupported && (
         <button
           onClick={() => switchNetwork(11155111)} // Switch to Sepolia
-          className="px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-xs rounded-lg transition-colors"
+          className="px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-xs rounded-lg transition-colors whitespace-nowrap"
           title={`Current network (${networkId}) is not supported`}
         >
           Switch to Sepolia
-        </button>
-      )}
-
-      {/* Refresh Balances Button */}
-      {walletConnected && (
-        <button
-          onClick={loadTokenBalances}
-          disabled={balanceLoading}
-          className="px-2 py-1 bg-gray-600 hover:bg-gray-700 text-white text-xs rounded transition-colors"
-          title="Refresh balances"
-        >
-          {balanceLoading ? '⟳' : '↻'}
         </button>
       )}
     </div>
