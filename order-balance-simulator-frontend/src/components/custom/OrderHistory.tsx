@@ -46,60 +46,21 @@ const parseNumber = (value: any, defaultValue: number = 0): number => {
     return defaultValue;
 };
 
-// ISPRAVLJENA: Funkcija za dobijanje tipa ordera
-const getOrderType = (item: any): string => {
+// ISPRAVLJENA funkcija za dobijanje labele tipa ordera
+const getOrderTypeLabel = (item: any): string => {
     // Pokušaj da uzmeš type iz različitih mesta
-    let type = item?.order?.type ?? item?.type;
+    const type = item?.order?.type ?? item?.type;
     
-    console.log('🔍 Debug getOrderType:', {
-        item: item,
-        orderType: item?.order?.type,
-        directType: item?.type,
-        resolvedType: type
-    });
-    
-    // Ako je type brojčana vrednost (enum), konvertuj ga u string
+    // Ako je type number (enum value), koristi label mapping
     if (typeof type === 'number') {
-        console.log('🔍 Type is number (enum):', type);
-        // Mapiranje na osnovu OrderType enum-a
-        switch (type) {
-            case OrderType.BuyLimit:
-                return 'Limit Buy';
-            case OrderType.SellLimit:
-                return 'Limit Sell';
-            case OrderType.BuyMarket:
-                return 'Market Buy';
-            case OrderType.SellMarket:
-                return 'Market Sell';
-            default:
-                return 'Unknown';
-        }
+        return orderTypeLabel[type as OrderType] || 'Unknown';
     }
     
-    // Ako je type string, koristi ga direktno ili mapiraj preko orderTypeLabel
+    // Ako je type string (iz backend-a), vrati ga direktno
     if (typeof type === 'string') {
-        console.log('🔍 Type is string:', type);
         return type;
     }
     
-    // Ako je type objekat (kao što vidimo u console), pokušaj da ga konvertuješ
-    if (typeof type === 'object' && type !== null) {
-        console.log('🔍 Type is object:', type);
-        // Možda je enum value
-        if (typeof type.valueOf === 'function') {
-            type = type.valueOf();
-            if (typeof type === 'number') {
-                return getOrderType({ order: { type } }); // Rekurzivni poziv
-            }
-        } else if (type.hasOwnProperty('value')) {
-            type = type.value;
-            if (typeof type === 'number') {
-                return getOrderType({ order: { type } }); // Rekurzivni poziv
-            }
-        }
-    }
-    
-    console.log('🔍 Final type value (fallback):', type);
     return 'N/A';
 };
 
@@ -335,7 +296,7 @@ const OrderHistoryContent: React.FC<OrderHistoryProps> = () => {
     );
 };
 
-// Optimized OrderRow komponenta - SA DEBUG LOGOVIMA ZA TYPE
+// Optimizovana OrderRow komponenta - ISPRAVLJENA
 const OrderRow = React.memo<{
     item: any;
     index: number;
@@ -348,9 +309,9 @@ const OrderRow = React.memo<{
         }
     }, [item?._id, onCancel, cancelLoading]);
 
-    // ISPRAVKA: Fleksibilno pristupanje podacima sa boljim type handling
+    // Fleksibilno pristupanje podacima sa boljim type handling
     const symbol = item?.order?.symbol || item?.pair || 'N/A';
-    const type = getOrderType(item); // Koristi novu funkciju za type
+    const typeLabel = getOrderTypeLabel(item);
     const price = parseNumber(item?.order?.price || item?.price);
     const quantity = parseNumber(item?.order?.quantity || item?.amount);
     const total = parseNumber(item?.order?.total || item?.total);
@@ -361,21 +322,17 @@ const OrderRow = React.memo<{
     const createdDate = parseDate(item?.created || item?.orderTime) || new Date();
     const completedDate = parseDate(item?.completed || item?.filledTime);
 
-    // Debug log za prvi order
-    if (index === 0) {
-        console.log('🔍 First order item full structure:', item);
-        console.log('🔍 Order type resolved to:', type);
-        console.log('🔍 Using orderTypeLabel:', orderTypeLabel);
-    }
+    // Dobij status vrednost (handle i enum i string)
+    const statusValue = typeof status === 'number' ? status : 
+        status === 'Filled' ? OrderStatus.Filled :
+        status === 'Cancelled' || status === 'Canceled' ? OrderStatus.Canceled :
+        OrderStatus.Pending;
 
     return (
         <tr className="table-row border hover:bg-slate-600 border-slate-500 bg-slate-900 transition-colors">
             <td className="py-2 px-4 border border-slate-500">{orderNumber}</td>
             <td className="py-2 px-4 border border-slate-500 font-mono">{symbol.toUpperCase()}</td>
-            <td className="py-2 px-4 border border-slate-500">
-                {/* Ako je type već string (npr. "Limit Buy"), koristi direktno, inače koristi orderTypeLabel */}
-                {typeof type === 'string' ? type : (orderTypeLabel?.[type] || type)}
-            </td>
+            <td className="py-2 px-4 border border-slate-500">{typeLabel}</td>
             <td className="py-2 px-4 border border-slate-500 font-mono">{price.toFixed(3)}</td>
             <td className="py-2 px-4 border border-slate-500 font-mono">{quantity.toFixed(3)}</td>
             <td className="py-2 px-4 border border-slate-500 font-mono hidden lg:table-cell">{total.toFixed(3)}</td>
@@ -386,7 +343,7 @@ const OrderRow = React.memo<{
                 {completedDate ? format(completedDate, "yyyy/MM/dd HH:mm:ss") : "-"}
             </td>
             <td className="py-2 px-4 border border-slate-500">
-                {status === OrderStatus.Pending ? (
+                {statusValue === OrderStatus.Pending ? (
                     <button
                         className="bg-red-900 px-2 xl:w-24 py-1 hover:bg-red-700 rounded-full disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-xs"
                         disabled={cancelLoading}
@@ -394,13 +351,13 @@ const OrderRow = React.memo<{
                     >
                         {cancelLoading ? "..." : "Cancel"}
                     </button>
-                ) : status === OrderStatus.Canceled ? (
+                ) : statusValue === OrderStatus.Canceled ? (
                     <div className="bg-yellow-900 px-2 xl:w-24 py-1 rounded-full inline-block text-xs">
-                        {orderStatusLabel?.[status] || status}
+                        {orderStatusLabel[statusValue] || 'Cancelled'}
                     </div>
                 ) : (
                     <div className="bg-green-900 px-2 xl:w-24 py-1 rounded-full inline-block text-xs">
-                        {orderStatusLabel?.[status] || status}
+                        {orderStatusLabel[statusValue] || 'Filled'}
                     </div>
                 )}
             </td>

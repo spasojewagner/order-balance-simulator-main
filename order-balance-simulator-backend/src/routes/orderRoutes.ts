@@ -1,9 +1,10 @@
-// order-balance-simulator-backend/src/routes/orderRoutes.ts - FIXED PRICE HANDLING
+// order-balance-simulator-backend/src/routes/orderRoutes.ts - FIXED CANCEL ROUTE
 
 import { Router, Request, Response } from 'express';
 import { body, validationResult } from 'express-validator';
 import { OrderController } from '../controllers/orderController';
 import { tradingService } from '../services/tradingServices';
+import Order from '../models/orderModel'; // Import Order model directly
 
 const router = Router();
 
@@ -20,7 +21,7 @@ const validateRequest = (req: Request, res: Response, next: Function) => {
   next();
 };
 
-// 🔧 FIXED VALIDATION RULES
+// Validation rules
 const createOrderValidation = [
   body('pair')
     .notEmpty()
@@ -34,7 +35,6 @@ const createOrderValidation = [
     .isIn(['Limit Buy', 'Limit Sell', 'Market Buy', 'Market Sell'])
     .withMessage('Invalid order type'),
 
-  // 🔧 FIXED: Better conditional price validation
   body('price')
     .custom((value, { req }) => {
       const orderType = req.body.type;
@@ -43,7 +43,6 @@ const createOrderValidation = [
 
       // For market orders, price can be undefined, null, or 0
       if (orderType === 'Market Buy' || orderType === 'Market Sell') {
-        // If price is provided for market orders, it should be positive or 0
         if (value !== undefined && value !== null) {
           if (typeof value !== 'number') {
             throw new Error('Price must be a number');
@@ -78,7 +77,7 @@ const createOrderValidation = [
     .withMessage('Invalid wallet address')
 ];
 
-// ===== FIXED CREATE ORDER ROUTE =====
+// ===== CREATE ORDER ROUTE =====
 router.post('/', createOrderValidation, validateRequest, async (req: Request, res: Response) => {
   try {
     const orderData = req.body;
@@ -94,22 +93,20 @@ router.post('/', createOrderValidation, validateRequest, async (req: Request, re
     if (orderData.type.includes('Market')) type = 'market';
     if (orderData.type.includes('Limit')) type = 'limit';
 
-    // 🔧 CRITICAL FIX: Handle price correctly for market orders
+    // Handle price correctly for market orders
     let price;
     if (type === 'market') {
-      // For market orders, remove price entirely or set to undefined
       price = undefined;
     } else {
-      // For limit orders, use the provided price
       price = Number(orderData.price);
     }
 
     // Create the order object for database
     const formattedOrder = {
       pair: orderData.pair?.toUpperCase(),
-      type: orderData.type, // Keep original type string for DB
-      side, // For trading engine
-      price, // undefined for market orders, number for limit orders
+      type: orderData.type,
+      side,
+      price,
       amount: Number(orderData.amount),
       walletAddress: orderData.walletAddress,
       orderTime: new Date(),
@@ -142,6 +139,97 @@ router.post('/', createOrderValidation, validateRequest, async (req: Request, re
     });
   }
 });
+
+// ===== 🔧 FIXED CANCEL ORDER ROUTE =====
+router.patch('/:id/cancel', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    
+    console.log('🚫 Attempting to cancel order:', id);
+
+    // 1. First get the order from database directly
+    const order = await Order.findById(id);
+    
+    if (!order) {
+      console.log('❌ Order not found:', id);
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    console.log('📋 Found order to cancel:', {
+      id: order._id,
+      pair: order.pair,
+      type: order.type,
+      status: order.status
+    });
+
+    // 2. Check if order can be cancelled
+    if (order.status === 'Filled' || order.status === 'Canceled') {
+      console.log('❌ Order cannot be cancelled, current status:', order.status);
+      return res.status(400).json({
+        success: false,
+        message: `Order cannot be cancelled. Current status: ${order.status}`
+      });
+    }
+
+    // 3. Cancel through trading service first (if it's still in the order book)
+    try {
+      const tradingResult = await tradingService.cancelOrder(id, order.pair);
+      console.log('🎯 Trading service cancel result:', tradingResult);
+    } catch (tradingError) {
+      console.warn('⚠️ Trading service cancel failed (order might already be filled):', tradingError);
+      // Continue with database update anyway
+    }
+
+    // 4. Update order status in database
+    const updatedOrder = await Order.findByIdAndUpdate(
+      id,
+      { 
+        status: 'Canceled',
+        canceledTime: new Date()
+      },
+      { new: true }
+    );
+
+    if (!updatedOrder) {
+      console.log('❌ Failed to update order in database');
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update order status'
+      });
+    }
+
+    console.log('✅ Order cancelled successfully:', {
+      id: updatedOrder._id,
+      status: updatedOrder.status
+    });
+
+    res.json({
+      success: true,
+      data: updatedOrder,
+      message: 'Order cancelled successfully'
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error cancelling order:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to cancel order'
+    });
+  }
+});
+
+// ===== OTHER ROUTES =====
+router.get('/', OrderController.getAllOrders);
+router.get('/stats/summary', OrderController.getOrdersSummary);
+router.get('/stats/volume/:pair', OrderController.getVolumeStats);
+router.get('/number/:no', OrderController.getOrderByNumber);
+router.get('/:id', OrderController.getOrderById);
+router.put('/:id', OrderController.updateOrder);
+router.patch('/:id/fill', OrderController.fillOrder);
+router.delete('/:id', OrderController.deleteOrder);
 
 // ===== GET ORDER BOOK =====
 router.get('/orderbook/:pair', async (req: Request, res: Response) => {
@@ -181,35 +269,7 @@ router.get('/trades/:pair', async (req: Request, res: Response) => {
   }
 });
 
-// ===== OTHER ROUTES =====
-router.get('/', OrderController.getAllOrders);
-router.get('/stats/summary', OrderController.getOrdersSummary);
-router.get('/stats/volume/:pair', OrderController.getVolumeStats);
-router.get('/number/:no', OrderController.getOrderByNumber);
-router.get('/:id', OrderController.getOrderById);
-router.put('/:id', OrderController.updateOrder);
-
-router.patch('/:id/cancel', async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const order = await OrderController.getOrderById(req, res);
-
-    if (order) {
-      const result = await tradingService.cancelOrder(id, order.pair);
-      res.json(result);
-    }
-  } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-});
-
-router.patch('/:id/fill', OrderController.fillOrder);
-router.delete('/:id', OrderController.deleteOrder);
-
-// ===== TRADING SPECIFIC ROUTES =====
+// ===== GET MARKET DATA =====
 router.get('/market/:pair', async (req: Request, res: Response) => {
   try {
     const { pair } = req.params;
@@ -227,7 +287,8 @@ router.get('/market/:pair', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/pairs', async (req: Request, res: Response) => {
+// ===== GET ACTIVE PAIRS =====
+router.get('/active-pairs', async (req: Request, res: Response) => {
   try {
     const pairs = tradingService.getActivePairs();
 
@@ -242,6 +303,7 @@ router.get('/pairs', async (req: Request, res: Response) => {
     });
   }
 });
+
 // ===== GET TRADES WITH TX HASH =====
 router.get('/trades-with-tx/:pair', async (req: Request, res: Response) => {
   try {
