@@ -23,7 +23,11 @@ const OrderBook: React.FC<OrderBookProps> = ({ symbol, onPriceSelected }) => {
         if (!symbol?.symbol) return;
         
         try {
-            const response = await OrderAPI.getOrderBook(symbol.symbol.toUpperCase());
+            // Konvertuj u BASE/USDT format za backend
+            const baseCoin = symbol.coinA || 'ETH';
+            const backendSymbol = `${baseCoin.toUpperCase()}/USDT`;
+            
+            const response = await OrderAPI.getOrderBook(backendSymbol);
             console.log('📊 Backend order book:', response);
             
             if (response.success && response.data) {
@@ -66,13 +70,23 @@ const OrderBook: React.FC<OrderBookProps> = ({ symbol, onPriceSelected }) => {
             
             return () => clearInterval(interval);
         } 
-        // OPCIJA 2: Koristi BINANCE WebSocket (postojeći kod)
+        // OPCIJA 2: Koristi BINANCE WebSocket - UVEK BASE/USDT
         else {
-            const depthSocket = new WebSocket(`wss://stream.binance.com/stream?streams=${symbol.symbol}@depth20`);
-            const tickerSocket = new WebSocket(`wss://stream.binance.com/ws/${symbol.symbol}@ticker`);
+            // Konvertuj u BASE/USDT format za Binance WebSocket
+            const baseCoin = symbol.coinA || symbol.symbol.split('/')[0] || 'ETH';
+            const binanceSymbol = `${baseCoin.toLowerCase()}usdt`;
+            
+            console.log(`📊 OrderBook WebSocket: ${binanceSymbol.toUpperCase()} (from ${symbol.symbol})`);
+            
+            const depthSocket = new WebSocket(`wss://stream.binance.com/stream?streams=${binanceSymbol}@depth20`);
+            const tickerSocket = new WebSocket(`wss://stream.binance.com/ws/${binanceSymbol}@ticker`);
 
-            depthSocket.onopen = () => {};
-            tickerSocket.onopen = () => {};
+            depthSocket.onopen = () => {
+                console.log(`✅ OrderBook depth connected: ${binanceSymbol}`);
+            };
+            tickerSocket.onopen = () => {
+                console.log(`✅ OrderBook ticker connected: ${binanceSymbol}`);
+            };
 
             depthSocket.onmessage = (event: MessageEvent) => {
                 let message = JSON.parse(event.data);
@@ -83,7 +97,7 @@ const OrderBook: React.FC<OrderBookProps> = ({ symbol, onPriceSelected }) => {
                             const price = parseFloat(item[0]);
                             const amount = parseFloat(item[1]);
                             const total = price * amount;
-                            const order: IOrder = {
+                            const order= {
                                 price: price,
                                 quantity: amount,
                                 total: total,
@@ -105,7 +119,7 @@ const OrderBook: React.FC<OrderBookProps> = ({ symbol, onPriceSelected }) => {
                             const price = parseFloat(item[0]);
                             const amount = parseFloat(item[1]);
                             const total = price * amount;
-                            const order: IOrder = {
+                            const order= {
                                 price: price,
                                 quantity: amount,
                                 total: total,
@@ -129,17 +143,31 @@ const OrderBook: React.FC<OrderBookProps> = ({ symbol, onPriceSelected }) => {
                 dispatch(setCurrentSymbolPrice(parseFloat(message.c)));
             };
 
+            depthSocket.onerror = (error) => {
+                console.error(`❌ OrderBook depth error for ${binanceSymbol}:`, error);
+            };
+
+            tickerSocket.onerror = (error) => {
+                console.error(`❌ OrderBook ticker error for ${binanceSymbol}:`, error);
+            };
+
             return () => {
                 depthSocket.close();
                 tickerSocket.close();
             };
         }
-    }, [symbol.symbol, useBackendData, dispatch]);
+    }, [symbol.symbol, symbol.coinA, useBackendData, dispatch]);
+
+    // Get display symbol - uvek BASE/USDT
+    const getDisplaySymbol = () => {
+        const baseCoin = symbol.coinA || symbol.symbol.split('/')[0] || 'ETH';
+        return `${baseCoin.toUpperCase()}/USDT`;
+    };
 
     return (
         <div className="border-slate-500 bg-slate-900 border rounded-xl mb-4">
             <div className="w-full xl:w-auto flex-grow px-4 py-2 font-medium flex justify-between items-center">
-                <span>Order Book</span>
+                <span>Order Book - {getDisplaySymbol()}</span>
                 {/* Toggle dugme za backend/binance */}
                 <button
                     onClick={() => setUseBackendData(!useBackendData)}

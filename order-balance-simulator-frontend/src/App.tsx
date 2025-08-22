@@ -49,15 +49,20 @@ function App() {
     // Novi useEffect za praćenje trenutnog simbola
     useEffect(() => {
         if (currentSymbol?.symbol) {
-            const pair = currentSymbol.symbol.toUpperCase();
-            socketService.subscribeToOrderBook(pair);
+            // UVEK koristi BASE/USDT format za socket subscriptions
+            const baseCoin = currentSymbol.coinA || 'ETH';
+            const normalizedSymbol = `${baseCoin.toUpperCase()}USDT`;
             
-            // Subscribe to price updates for coins
-            const coinId = currentSymbol.coinA.toLowerCase();
+            console.log(`🔄 Subscribing to: ${normalizedSymbol} (from ${currentSymbol.symbol})`);
+            
+            socketService.subscribeToOrderBook(normalizedSymbol);
+            
+            // Subscribe to price updates for coins - use base coin ID
+            const coinId = baseCoin.toLowerCase();
             socketService.subscribeToPriceUpdates(coinId);
             
             return () => {
-                socketService.unsubscribeFromOrderBook(pair);
+                socketService.unsubscribeFromOrderBook(normalizedSymbol);
                 socketService.unsubscribeFromPriceUpdates(coinId);
             };
         }
@@ -69,7 +74,7 @@ function App() {
             case OrderType.BuyLimit: return 'Limit Buy';
             case OrderType.SellLimit: return 'Limit Sell';
             case OrderType.BuyMarket: return 'Market Buy';
-            case OrderType.SellMarktet: return 'Market Sell';
+            case OrderType.SellMarket: return 'Market Sell';
             default: return 'Limit Buy';
         }
     };
@@ -85,22 +90,22 @@ function App() {
 
     // Balance check functions for different order types
     const limitBuyBalanceCheck = (price: number, percent: number) => {
-        // For limit buy, calculate how much we can buy with percentage of balance2 (quote currency)
+        // For limit buy, calculate how much we can buy with percentage of balance2 (USDT)
         return (balance2 * percent) / 100 / price;
     };
 
     const limitSellBalanceCheck = (_: number, percent: number) => {
-        // For limit sell, use percentage of balance1 (base currency)
+        // For limit sell, use percentage of balance1 (base currency - ETH)
         return (balance1 * percent) / 100;
     };
 
     const marketBuyBalanceCheck = (price: number, percent: number) => {
-        // For market buy, calculate how much we can buy with percentage of balance2 (quote currency)
+        // For market buy, calculate how much we can buy with percentage of balance2 (USDT)
         return (balance2 * percent) / 100 / price;
     };
 
     const marketSellBalanceCheck = (_: number, percent: number) => {
-        // For market sell, use percentage of balance1 (base currency)
+        // For market sell, use percentage of balance1 (base currency - ETH)
         return (balance1 * percent) / 100;
     };
 
@@ -127,16 +132,17 @@ function App() {
         try {
             console.log('🚀 Frontend order data:', { type, symbol, price, quantity, total, status });
             
+            // Konvertuj symbol u BASE/USDT format za backend
+            const baseCoin = currentSymbol.coinA || 'ETH';
+            const backendSymbol = `${baseCoin.toUpperCase()}/USDT`;
+            
             // Mapiraj frontend → backend format
             const backendOrderData = {
-                pair: symbol.toUpperCase(), // backend očekuje "pair"
-                type: getBackendOrderType(type), // konvertuj enum → string
+                pair: backendSymbol, // uvek BASE/USDT
+                type: getBackendOrderType(type), 
                 price: Number(price),
-                amount: Number(quantity), // backend očekuje "amount"
+                amount: Number(quantity), 
                 status: getBackendOrderStatus(status)
-                // no: backend će automatski generisati
-                // orderTime: backend će automatski postaviti
-                // total: backend će kalkulisati
             };
 
             console.log('🚀 Sending to backend:', backendOrderData);
@@ -145,7 +151,7 @@ function App() {
             await dispatch(createOrder(backendOrderData)).unwrap();
             
             // Toast za market ordere
-            if (type === OrderType.BuyMarket || type === OrderType.SellMarktet) {
+            if (type === OrderType.BuyMarket || type === OrderType.SellMarket) {
                 toast.success("Successfully Filled!", { position: "top-center" });
             } else {
                 toast.success("Order placed successfully!", { position: "top-center" });
@@ -181,6 +187,12 @@ function App() {
         }
     };
 
+    // Get display symbol for UI - uvek BASE/USDT
+    const getDisplaySymbol = () => {
+        const baseCoin = currentSymbol.coinA || 'ETH';
+        return `${baseCoin.toUpperCase()}/USDT`;
+    };
+
     return (
         <>
             <div className="min-w-full bg-slate-950 min-h-svh pt-10">
@@ -196,8 +208,10 @@ function App() {
                                 setSymbolIndex(value as number);
                             }}
                             options={symbols.map((item, index) => {
+                                // Prikaz uvek kao BASE/USDT
+                                const baseCoin = item.coinA || 'ETH';
                                 return {
-                                    label: `${item.coinA}/${item.coinB}`,
+                                    label: `${baseCoin}/USDT`,
                                     value: index,
                                 };
                             })}
@@ -208,7 +222,7 @@ function App() {
                         <TextInputField
                             prefix="Balance"
                             type="number"
-                            suffix={tokenA}
+                            suffix={tokenA || 'ETH'}
                             value={balance1}
                             onChange={(value) => {
                                 dispatch(setBalance1(parseFloat(value as string)));
@@ -217,7 +231,7 @@ function App() {
                         <TextInputField
                             prefix="Balance"
                             type="number"
-                            suffix={tokenB}
+                            suffix="USDT"
                             value={balance2}
                             onChange={(value) => {
                                 dispatch(setBalance2(parseFloat(value as string)));
@@ -250,7 +264,7 @@ function App() {
                                                             symbol={currentSymbol}
                                                             defaultPrice={selectedBuyPrice}
                                                             isMarket={false}
-                                                            buttonLabel="BUY LIMIT"
+                                                            buttonLabel={`BUY ${currentSymbol.coinA || 'ETH'}`}
                                                             balance1={balance1}
                                                             balance2={balance2}
                                                             balanceCheck={limitBuyBalanceCheck}
@@ -262,7 +276,7 @@ function App() {
                                                                     quantity, 
                                                                     total: price * quantity, 
                                                                     status: OrderStatus.Pending, 
-                                                                    symbol: currentSymbol.symbol 
+                                                                    symbol: getDisplaySymbol()
                                                                 });
                                                             }}
                                                             customStyle={colorVariants.blue}
@@ -271,7 +285,7 @@ function App() {
                                                             symbol={currentSymbol}
                                                             defaultPrice={selectedBuyPrice}
                                                             isMarket={false}
-                                                            buttonLabel="SELL LIMIT"
+                                                            buttonLabel={`SELL ${currentSymbol.coinA || 'ETH'}`}
                                                             balance1={balance1}
                                                             balance2={balance2}
                                                             balanceCheck={limitSellBalanceCheck}
@@ -283,7 +297,7 @@ function App() {
                                                                     quantity, 
                                                                     total: price * quantity, 
                                                                     status: OrderStatus.Pending, 
-                                                                    symbol: currentSymbol.symbol 
+                                                                    symbol: getDisplaySymbol()
                                                                 });
                                                             }}
                                                             customStyle={colorVariants.red}
@@ -299,7 +313,7 @@ function App() {
                                                             symbol={currentSymbol}
                                                             defaultPrice={currentSymbolPrice}
                                                             isMarket={true}
-                                                            buttonLabel="BUY MARKET"
+                                                            buttonLabel={`BUY ${currentSymbol.coinA || 'ETH'}`}
                                                             balance1={balance1}
                                                             balance2={balance2}
                                                             balanceCheck={marketBuyBalanceCheck}
@@ -311,7 +325,7 @@ function App() {
                                                                     quantity, 
                                                                     total: price * quantity, 
                                                                     status: OrderStatus.Filled, 
-                                                                    symbol: currentSymbol.symbol 
+                                                                    symbol: getDisplaySymbol()
                                                                 });
                                                             }}
                                                             customStyle={colorVariants.blue}
@@ -323,16 +337,16 @@ function App() {
                                                             balance1={balance1}
                                                             balance2={balance2}
                                                             balanceCheck={marketSellBalanceCheck}
-                                                            buttonLabel="SELL MARKET"
+                                                            buttonLabel={`SELL ${currentSymbol.coinA || 'ETH'}`}
                                                             checkValidity={marketSellCheckValidity}
                                                             onSubmitted={(price: number, quantity: number) => {
                                                                 addOrder({ 
-                                                                    type: OrderType.SellMarktet, 
+                                                                    type: OrderType.SellMarket, 
                                                                     price, 
                                                                     quantity, 
                                                                     total: price * quantity, 
                                                                     status: OrderStatus.Filled, 
-                                                                    symbol: currentSymbol.symbol 
+                                                                    symbol: getDisplaySymbol()
                                                                 });
                                                             }}
                                                             customStyle={colorVariants.red}

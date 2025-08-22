@@ -78,9 +78,9 @@ class ErrorBoundary extends React.Component<
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error('OrderHistory Error:', error, errorInfo);
-  }
+//   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+//     console.error('OrderHistory Error:', error, errorInfo);
+//   }
 
   render() {
     if (this.state.hasError) {
@@ -357,7 +357,7 @@ const OrderRow = React.memo<{
                     </div>
                 ) : (
                     <div className="bg-green-900 px-2 xl:w-24 py-1 rounded-full inline-block text-xs">
-                        {orderStatusLabel[statusValue] || 'Filled'}
+                      {orderStatusLabel[statusValue as OrderStatus] || 'Filled'}
                     </div>
                 )}
             </td>

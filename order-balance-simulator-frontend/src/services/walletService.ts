@@ -252,7 +252,7 @@ export class WalletService {
 
       return {
         success: true,
-        account: this.account,
+        account: this.account as string,
         networkId: this.networkId
       };
 
@@ -384,16 +384,16 @@ export class WalletService {
 
       console.log(`✅ Token balance loaded:`, {
         symbol,
-        balance: balance.toString(),
-        decimals: Number(decimals),
-        formatted
+       balance: String(balance),  
+      decimals: Number(decimals),
+      formatted: String((Number(balance) / Math.pow(10, Number(decimals))))
       });
 
       return {
-        balance: balance.toString(),
+        balance: String(balance),  
         decimals: Number(decimals),
         formatted,
-        symbol: symbol.toString()
+        symbol: String(symbol)
       };
     } catch (error) {
       console.error('❌ Failed to get token balance:', error);
@@ -445,7 +445,7 @@ export class WalletService {
       const dexContract = new this.web3.eth.Contract(DEX_CONTRACT_ABI, dexAddress);
       const balance = await dexContract.methods.getBalance(account, tokenAddress).call();
       
-      const balanceEth = this.web3.utils.fromWei(balance, 'ether');
+      const balanceEth = this.web3.utils.fromWei(String(balance), 'ether');
       console.log(`✅ DEX balance: ${balanceEth}`);
       return balanceEth;
     } catch (error) {
@@ -578,7 +578,7 @@ By signing this message, you confirm this order creation.`;
       const contract = new this.web3.eth.Contract(ERC20_ABI, tokenAddress);
       const allowance = await contract.methods.allowance(this.account, spenderAddress).call();
       
-      return this.web3.utils.fromWei(allowance, 'ether');
+      return this.web3.utils.fromWei(String(allowance), 'ether');
     } catch (error) {
       console.error('❌ Failed to check allowance:', error);
       return '0';

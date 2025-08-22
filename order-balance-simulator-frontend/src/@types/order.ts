@@ -48,6 +48,7 @@ export interface IOrder {
     status: 'Filled' | 'Cancelled' | 'Pending';
     createdAt: string;
     updatedAt: string;
+    quantity?: number
 }
 
 // === FRONTEND INTERFACES ===
@@ -101,6 +102,8 @@ export interface CreateOrderRequest {
     amount: number;
     orderTime?: string;
     status?: 'Filled' | 'Cancelled' | 'Pending';
+    symbol?: number
+    quantity?: number
 }
 
 export interface OrderFilters {

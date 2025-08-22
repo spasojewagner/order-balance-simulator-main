@@ -7,6 +7,7 @@ interface TextInputFieldProps {
     type: string;
     placeholder?: string;
     onChange: (value: string | number) => void;
+    disabled?: boolean;
 }
 
 const TextInputField: React.FC<TextInputFieldProps> = ({ value, type, onChange, prefix, suffix, placeholder }) => {

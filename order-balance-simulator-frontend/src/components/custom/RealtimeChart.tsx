@@ -6,6 +6,38 @@ interface RealtimeChartProps {
     symbol: ISymbol;
 }
 
+// Type for the price update data from socket
+interface PriceUpdateData {
+    price: number;
+    timestamp: number;
+}
+
+// Type for TradingView widget configuration
+interface TradingViewWidgetConfig {
+    autosize: boolean;
+    symbol: string;
+    interval: string;
+    timezone: string;
+    theme: string;
+    style: string;
+    locale: string;
+    toolbar_bg: string;
+    enable_publishing: boolean;
+    withdateranges: boolean;
+    range: string;
+    hide_side_toolbar: boolean;
+    allow_symbol_change: boolean;
+    details: boolean;
+    hotlist: boolean;
+    calendar: boolean;
+    show_popup_button: boolean;
+    popup_width: string;
+    popup_height: string;
+    container_id: string;
+    studies: string[];
+    overrides: Record<string, string>;
+}
+
 const RealtimeChart: React.FC<RealtimeChartProps> = ({ symbol }) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const [realtimePrice, setRealtimePrice] = useState<number | null>(null);
@@ -31,9 +63,24 @@ const RealtimeChart: React.FC<RealtimeChartProps> = ({ symbol }) => {
         script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
         script.type = 'text/javascript';
         script.async = true;
-        script.innerHTML = JSON.stringify({
+        
+        // Determine the best exchange and symbol format for the symbol
+        let exchangeSymbol = `BINANCE:${tradingSymbol}`;
+        
+        // Special handling for different pairs
+        if (tradingSymbol === 'ETHBTC') {
+            // For ETH/BTC, try multiple exchanges
+            exchangeSymbol = `BINANCE:ETHBTC`;
+        } else if (tradingSymbol.endsWith('BTC') && !tradingSymbol.includes('USDT')) {
+            // For other BTC pairs, try Coinbase or Bitstamp
+            exchangeSymbol = `COINBASE:${tradingSymbol}`;
+        }
+        
+        console.log(`📊 Loading chart: ${exchangeSymbol} (from symbol: ${symbol.symbol})`);
+        
+        const config: TradingViewWidgetConfig = {
             autosize: true,
-            symbol: `BINANCE:${tradingSymbol}`,
+            symbol: exchangeSymbol,
             interval: "1",
             timezone: "Etc/UTC",
             theme: "dark",
@@ -65,8 +112,9 @@ const RealtimeChart: React.FC<RealtimeChartProps> = ({ symbol }) => {
                 "mainSeriesProperties.candleStyle.wickUpColor": "#22c55e",
                 "mainSeriesProperties.candleStyle.wickDownColor": "#ef4444"
             }
-        });
+        };
 
+        script.innerHTML = JSON.stringify(config);
         wrapper.appendChild(script);
         
         // Force resize after load
@@ -81,9 +129,14 @@ const RealtimeChart: React.FC<RealtimeChartProps> = ({ symbol }) => {
     useEffect(() => {
         if (!symbol?.symbol) return;
         
-        // Format symbol for TradingView
-        const sym = symbol.symbol.toUpperCase();
-        const tradingSymbol = sym.includes('USDT') ? sym : `${sym}USDT`;
+        // UVEK koristi USDT parove za Chart - samo base coin se menja!
+        let baseCoin = symbol.coinA || symbol.symbol.split('/')[0] || 'ETH';
+        baseCoin = baseCoin.toUpperCase();
+        
+        // Chart uvek pokazuje BASE/USDT
+        const tradingSymbol = `${baseCoin}USDT`;
+        
+        console.log(`📊 Chart symbol: ${baseCoin}/USDT -> ${tradingSymbol}`);
         
         // Initialize TradingView widget
         initTradingViewWidget(tradingSymbol);
@@ -91,6 +144,8 @@ const RealtimeChart: React.FC<RealtimeChartProps> = ({ symbol }) => {
         // Store initial price
         if (symbol.current_price) {
             initialPriceRef.current = symbol.current_price;
+        } else if (symbol.price) {
+            initialPriceRef.current = symbol.price;
         }
         
         // Force resize on window resize
@@ -110,7 +165,7 @@ const RealtimeChart: React.FC<RealtimeChartProps> = ({ symbol }) => {
                 containerRef.current.innerHTML = '';
             }
         };
-    }, [symbol.symbol]);
+    }, [symbol.symbol, symbol.coinA, symbol.coinB]);
     
     // Handle real-time price updates via socket
     useEffect(() => {
@@ -122,10 +177,10 @@ const RealtimeChart: React.FC<RealtimeChartProps> = ({ symbol }) => {
         // Listen for price updates from socket
         const eventName = `price_update_${symbol.id}`;
         
-        // Try to get socket instance directly
+        // Try to get socket instance directly with proper typing
         const socket = (socketService as any).socket;
         if (socket) {
-            const handlePriceUpdate = (data: { price: number; timestamp: number }) => {
+            const handlePriceUpdate = (data: PriceUpdateData) => {
                 console.log(`💰 Real-time price for ${symbol.id}:`, data.price);
                 setRealtimePrice(data.price);
                 setIsLive(true);
@@ -159,8 +214,16 @@ const RealtimeChart: React.FC<RealtimeChartProps> = ({ symbol }) => {
         return price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     };
     
-    // Get display price
-    const displayPrice = realtimePrice || symbol.current_price || 0;
+    // Get display price - with safe fallback
+    const displayPrice = realtimePrice ?? symbol.current_price ?? symbol.price ?? 0;
+    
+    // Get display symbol for header - uvek BASE/USDT
+    const getDisplaySymbol = () => {
+        const baseCoin = symbol.coinA || symbol.symbol.split('/')[0] || 'ETH';
+        return `${baseCoin.toUpperCase()}/USDT`;
+    };
+    
+    const displaySymbol = getDisplaySymbol();
     
     return (
         <div className="w-full flex flex-col border rounded-xl border-slate-500 mb-4 bg-slate-900 overflow-hidden">
@@ -184,7 +247,7 @@ const RealtimeChart: React.FC<RealtimeChartProps> = ({ symbol }) => {
                 {/* Compact price display */}
                 <div className="flex items-center gap-3">
                     <span className="text-xs text-slate-500">
-                        {symbol.symbol.toUpperCase()}/USDT
+                        {displaySymbol}
                     </span>
                     
                     <div className="flex items-center gap-2">

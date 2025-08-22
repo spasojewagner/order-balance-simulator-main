@@ -1,10 +1,12 @@
-// src/@types/index.ts - Updated with blockchain integration
+// src/@types/index.ts - Updated ISymbol interface with missing properties
 
 export interface ISymbol {
+  id: string; // Added missing id property
   symbol: string;
   coinA: string;
   coinB: string;
   price?: number;
+  current_price?: number; // Added missing current_price property
   change?: number;
   volume?: number;
   
