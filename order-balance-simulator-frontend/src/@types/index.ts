@@ -28,6 +28,7 @@ export interface ISymbol {
     atl_change_percentage?: number; // ATL change percentage
     atl_date?: string;         // ATL date
     last_updated?: string;     // Last update timestamp
+    price?: number
 }
 // Order related types
 export interface IOrder {

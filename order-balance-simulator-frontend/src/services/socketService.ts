@@ -4,7 +4,7 @@ import { updateOrderRealTime, removeOrderRealTime } from '../store/slices/orderS
 import { toast } from 'react-toastify';
 
 class SocketService {
-  private socket: Socket | null = null;
+  public socket: Socket | null = null;
   private subscribedPairs: Set<string> = new Set();
   
   connect() {

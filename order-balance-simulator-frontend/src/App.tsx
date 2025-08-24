@@ -13,7 +13,7 @@ import { OrderType, OrderStatus } from "./@types/order";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import WalletConnect from "./components/wallet-connect/WalletConnect";
-import CryptoHeaderDisplay from './components/CryptoHeaderDisplay';
+import StyledCryptoSelector from './components/pure/Select';
 
 import { socketService } from './services/socketService';
 
@@ -201,25 +201,18 @@ function App() {
                 <div className="container mx-auto">
                     <div className="flex justify-between items-center">
                         <h2 className="text-2xl text-left">Order Trading Platform</h2>
-                        <CryptoHeaderDisplay />
                         <WalletConnect />
                     </div>
                     <div className="flex flex-wrap flex-col justify-between items-center gap-4 mt-4 xl:flex-row">
-                        <Select
-                            onChange={(value: number | string) => {
-                                dispatch(setCurrentSymbol(symbols[value as number].symbol));
-                                setSymbolIndex(value as number);
-                            }}
-                            options={symbols.map((item, index) => {
-                                // Prikaz uvek kao BASE/USDT
-                                const baseCoin = item.coinA || 'ETH';
-                                return {
-                                    label: `${baseCoin}/USDT`,
-                                    value: index,
-                                };
-                            })}
+                        <StyledCryptoSelector
+                            symbols={symbols}
                             value={symbolIndex}
-                        ></Select>
+                            currentSymbol={currentSymbol}
+                            onChange={(newIndex: number) => {
+                                dispatch(setCurrentSymbol(symbols[newIndex].symbol));
+                                setSymbolIndex(newIndex);
+                            }}
+                        />
                         <div className="flex-grow"></div>
                         <span className="text-gray-500 ">Input your balance:</span>
                         <TextInputField
