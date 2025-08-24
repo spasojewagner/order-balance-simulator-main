@@ -1,44 +1,34 @@
 // src/@types/index.ts - Updated ISymbol interface with missing properties
 
 export interface ISymbol {
-  id: string; // Added missing id property
-  symbol: string;
-  coinA: string;
-  coinB: string;
-  price?: number;
-  current_price?: number; // Added missing current_price property
-  change?: number;
-  volume?: number;
-  
-  // Blockchain Integration Properties
-  tokenAAddress?: string;
-  tokenBAddress?: string;
-  tokenADecimals?: number;
-  tokenBDecimals?: number;
-  
-  // Network specific addresses
-  addresses?: {
-    [networkId: number]: {
-      tokenA: string;
-      tokenB: string;
-    };
-  };
-  
-  // Trading pair metadata
-  pairAddress?: string;
-  liquidityPoolAddress?: string;
-  
-  // Display properties
-  displayName?: string;
-  icon?: string;
-  category?: 'major' | 'stable' | 'defi' | 'altcoin';
-  
-  // Trading properties
-  minTradeAmount?: number;
-  maxTradeAmount?: number;
-  tradingEnabled?: boolean;
+    // Trading pair properties
+    coinA: string;             // DODAJ OVO - First coin (e.g., 'BTC', 'ETH')
+    coinB: string;             // DODAJ OVO - Second coin (e.g., 'USDT', 'BTC')
+    
+    // Existing properties
+    id?: string;                // CoinGecko ID (e.g., 'bitcoin', 'ethereum')
+    symbol: string;            // Trading symbol (e.g., 'btcusdt', 'ethbtc')
+    name?: string;             // Full name (e.g., 'Bitcoin', 'Ethereum')
+    current_price?: number;    // Current price in USD
+    image?: string;            // Logo URL
+    market_cap?: number;       // Market capitalization
+    market_cap_rank?: number;  // Market cap ranking
+    price_change_24h?: number; // 24h price change
+    price_change_percentage_24h?: number; // 24h price change percentage
+    total_volume?: number;     // 24h trading volume
+    high_24h?: number;         // 24h high
+    low_24h?: number;          // 24h low
+    circulating_supply?: number; // Circulating supply
+    total_supply?: number;     // Total supply
+    max_supply?: number;       // Maximum supply
+    ath?: number;              // All-time high
+    ath_change_percentage?: number; // ATH change percentage
+    ath_date?: string;         // ATH date
+    atl?: number;              // All-time low
+    atl_change_percentage?: number; // ATL change percentage
+    atl_date?: string;         // ATL date
+    last_updated?: string;     // Last update timestamp
 }
-
 // Order related types
 export interface IOrder {
   id: string;

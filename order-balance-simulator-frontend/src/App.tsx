@@ -13,16 +13,17 @@ import { OrderType, OrderStatus } from "./@types/order";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import WalletConnect from "./components/wallet-connect/WalletConnect";
+import CryptoHeaderDisplay from './components/CryptoHeaderDisplay';
 
 import { socketService } from './services/socketService';
 
 function App() {
     const dispatch = useAppDispatch();
-    
+
     // State
     const [symbolIndex, setSymbolIndex] = useState(0);
     const [selectedBuyPrice, setSelectedBuyPrice] = useState(0);
-    
+
     // Redux selectors - koristi novi store
     const tokenA = useAppSelector((state) => state.app.currentSymbol.coinA);
     const tokenB = useAppSelector((state) => state.app.currentSymbol.coinB);
@@ -30,17 +31,17 @@ function App() {
     const balance2 = useAppSelector((state) => state.app.balance2);
     const currentSymbol = useAppSelector((state) => state.app.currentSymbol);
     const currentSymbolPrice = useAppSelector((state) => state.app.currentSymbolPrice);
-    
+
     // Orders iz orderSlice
     const ordersState = useAppSelector((state) => state.orders);
 
     useEffect(() => {
         // Konektuj socket
         socketService.connect();
-        
+
         // Initial fetch orders iz Redux
         dispatch(fetchOrders());
-        
+
         return () => {
             socketService.disconnect();
         };
@@ -52,15 +53,15 @@ function App() {
             // UVEK koristi BASE/USDT format za socket subscriptions
             const baseCoin = currentSymbol.coinA || 'ETH';
             const normalizedSymbol = `${baseCoin.toUpperCase()}USDT`;
-            
+
             console.log(`🔄 Subscribing to: ${normalizedSymbol} (from ${currentSymbol.symbol})`);
-            
+
             socketService.subscribeToOrderBook(normalizedSymbol);
-            
+
             // Subscribe to price updates for coins - use base coin ID
             const coinId = baseCoin.toLowerCase();
             socketService.subscribeToPriceUpdates(coinId);
-            
+
             return () => {
                 socketService.unsubscribeFromOrderBook(normalizedSymbol);
                 socketService.unsubscribeFromPriceUpdates(coinId);
@@ -70,7 +71,7 @@ function App() {
 
     // Helper funkcije za mapiranje frontend → backend
     const getBackendOrderType = (frontendType: OrderType): string => {
-        switch(frontendType) {
+        switch (frontendType) {
             case OrderType.BuyLimit: return 'Limit Buy';
             case OrderType.SellLimit: return 'Limit Sell';
             case OrderType.BuyMarket: return 'Market Buy';
@@ -80,7 +81,7 @@ function App() {
     };
 
     const getBackendOrderStatus = (frontendStatus: OrderStatus): string => {
-        switch(frontendStatus) {
+        switch (frontendStatus) {
             case OrderStatus.Pending: return 'Pending';
             case OrderStatus.Filled: return 'Filled';
             case OrderStatus.Canceled: return 'Cancelled';
@@ -131,38 +132,39 @@ function App() {
     const addOrder = async ({ type, symbol, price, quantity, total, status }: any) => {
         try {
             console.log('🚀 Frontend order data:', { type, symbol, price, quantity, total, status });
-            
+
             // Konvertuj symbol u BASE/USDT format za backend
             const baseCoin = currentSymbol.coinA || 'ETH';
             const backendSymbol = `${baseCoin.toUpperCase()}/USDT`;
-            
+
             // Mapiraj frontend → backend format
             const backendOrderData = {
                 pair: backendSymbol, // uvek BASE/USDT
-                type: getBackendOrderType(type), 
+                type: getBackendOrderType(type),
                 price: Number(price),
-                amount: Number(quantity), 
+                amount: Number(quantity),
                 status: getBackendOrderStatus(status)
             };
 
             console.log('🚀 Sending to backend:', backendOrderData);
-            
+
             // Pošalji na backend
             await dispatch(createOrder(backendOrderData)).unwrap();
-            
+
             // Toast za market ordere
             if (type === OrderType.BuyMarket || type === OrderType.SellMarket) {
                 toast.success("Successfully Filled!", { position: "top-center" });
+
             } else {
                 toast.success("Order placed successfully!", { position: "top-center" });
             }
-            
+
             // Refresh orders
             dispatch(fetchOrders());
-            
+
         } catch (error: any) {
             console.error('❌ Failed to create order:', error);
-            
+
             // Detaljniji error handling
             let errorMessage = "Failed to create order!";
             if (error?.message) {
@@ -170,7 +172,7 @@ function App() {
             } else if (error?.response?.data?.message) {
                 errorMessage = error.response.data.message;
             }
-            
+
             toast.error(errorMessage, { position: "top-center" });
         }
     };
@@ -199,6 +201,7 @@ function App() {
                 <div className="container mx-auto">
                     <div className="flex justify-between items-center">
                         <h2 className="text-2xl text-left">Order Trading Platform</h2>
+                        <CryptoHeaderDisplay />
                         <WalletConnect />
                     </div>
                     <div className="flex flex-wrap flex-col justify-between items-center gap-4 mt-4 xl:flex-row">
@@ -270,12 +273,12 @@ function App() {
                                                             balanceCheck={limitBuyBalanceCheck}
                                                             checkValidity={limitBuyCheckValidity}
                                                             onSubmitted={(price: number, quantity: number) => {
-                                                                addOrder({ 
-                                                                    type: OrderType.BuyLimit, 
-                                                                    price, 
-                                                                    quantity, 
-                                                                    total: price * quantity, 
-                                                                    status: OrderStatus.Pending, 
+                                                                addOrder({
+                                                                    type: OrderType.BuyLimit,
+                                                                    price,
+                                                                    quantity,
+                                                                    total: price * quantity,
+                                                                    status: OrderStatus.Pending,
                                                                     symbol: getDisplaySymbol()
                                                                 });
                                                             }}
@@ -291,12 +294,12 @@ function App() {
                                                             balanceCheck={limitSellBalanceCheck}
                                                             checkValidity={limitSellCheckValidity}
                                                             onSubmitted={(price: number, quantity: number) => {
-                                                                addOrder({ 
-                                                                    type: OrderType.SellLimit, 
-                                                                    price, 
-                                                                    quantity, 
-                                                                    total: price * quantity, 
-                                                                    status: OrderStatus.Pending, 
+                                                                addOrder({
+                                                                    type: OrderType.SellLimit,
+                                                                    price,
+                                                                    quantity,
+                                                                    total: price * quantity,
+                                                                    status: OrderStatus.Pending,
                                                                     symbol: getDisplaySymbol()
                                                                 });
                                                             }}
@@ -319,13 +322,13 @@ function App() {
                                                             balanceCheck={marketBuyBalanceCheck}
                                                             checkValidity={marketBuyCheckValidity}
                                                             onSubmitted={(price: number, quantity: number) => {
-                                                                addOrder({ 
-                                                                    type: OrderType.BuyMarket, 
-                                                                    price, 
-                                                                    quantity, 
-                                                                    total: price * quantity, 
-                                                                    status: OrderStatus.Filled, 
-                                                                    symbol: getDisplaySymbol()
+                                                                addOrder({
+                                                                    type: OrderType.BuyMarket,
+                                                                    price: currentSymbolPrice || price, // UVEK KORISTI currentSymbolPrice
+                                                                    quantity,
+                                                                    total: (currentSymbolPrice || price) * quantity,
+                                                                    status: OrderStatus.Filled,
+                                                                    symbol: currentSymbol.symbol
                                                                 });
                                                             }}
                                                             customStyle={colorVariants.blue}
@@ -340,13 +343,13 @@ function App() {
                                                             buttonLabel={`SELL ${currentSymbol.coinA || 'ETH'}`}
                                                             checkValidity={marketSellCheckValidity}
                                                             onSubmitted={(price: number, quantity: number) => {
-                                                                addOrder({ 
-                                                                    type: OrderType.SellMarket, 
-                                                                    price, 
-                                                                    quantity, 
-                                                                    total: price * quantity, 
-                                                                    status: OrderStatus.Filled, 
-                                                                    symbol: getDisplaySymbol()
+                                                                addOrder({
+                                                                    type: OrderType.SellMarket, // ISPRAVKA: bio je SellMarktet
+                                                                    price: currentSymbolPrice || price, // UVEK KORISTI currentSymbolPrice
+                                                                    quantity,
+                                                                    total: (currentSymbolPrice || price) * quantity,
+                                                                    status: OrderStatus.Filled,
+                                                                    symbol: currentSymbol.symbol
                                                                 });
                                                             }}
                                                             customStyle={colorVariants.red}
@@ -363,7 +366,7 @@ function App() {
                     <div className="pb-8 mt-4">
                         <OrderHistory />
                     </div>
-                 
+
                 </div>
             </div>
             <ToastContainer />

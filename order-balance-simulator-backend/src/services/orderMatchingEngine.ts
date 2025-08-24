@@ -85,75 +85,109 @@ export class OrderMatchingEngine extends EventEmitter {
   /**
    * Process market order
    */
-  private async processMarketOrder(order: IOrder): Promise<{ trades: TradeData[], remainingOrder?: IOrder }> {
-    const pair = order.pair.toUpperCase();
-    const trades: TradeData[] = [];
-    let remainingAmount = order.amount;
+/**
+ * 🔧 FIXED: Process market order with proper price fallback
+ */
+private async processMarketOrder(order: IOrder): Promise<{ trades: TradeData[], remainingOrder?: IOrder }> {
+  const pair = order.pair.toUpperCase();
+  const trades: TradeData[] = [];
+  let remainingAmount = order.amount;
 
-    if (!this.orderBooks.has(pair)) {
-      this.orderBooks.set(pair, { bids: [], asks: [] });
-    }
-
-    const book = this.orderBooks.get(pair)!;
-    const isMarketBuy = order.type === OrderType.MARKET_BUY;
-    const oppositeOrders = isMarketBuy ? book.asks : book.bids;
-
-    while (oppositeOrders.length > 0 && remainingAmount > 0) {
-      const bestOpposite = oppositeOrders[0];
-      const tradeAmount = Math.min(remainingAmount, bestOpposite.amount);
-      const tradePrice = bestOpposite.price;
-
-      // Create trade
-      const trade: TradeData = {
-        buyOrderId: isMarketBuy ? order._id.toString() : bestOpposite.orderId,
-        sellOrderId: isMarketBuy ? bestOpposite.orderId : order._id.toString(),
-        price: tradePrice,
-        amount: tradeAmount,
-        timestamp: new Date(),
-        pair: pair
-      };
-
-      trades.push(trade);
-      this.trades.push(trade);
-
-      // Save trade to database with blockchain execution
-      await this.executeTrade(trade, 
-        isMarketBuy ? order : bestOpposite.order,
-        isMarketBuy ? bestOpposite.order : order
-      );
-
-      // Update amounts
-      remainingAmount -= tradeAmount;
-      bestOpposite.amount -= tradeAmount;
-
-      // If opposite order is fully filled, remove and update database
-      if (bestOpposite.amount === 0) {
-        oppositeOrders.shift();
-        await this.fillOrder(bestOpposite.order, trade.timestamp);
-      }
-
-      console.log(`🤝 Trade executed: ${tradeAmount} ${pair} @ ${tradePrice}`);
-    }
-
-    // Update market order status
-    if (remainingAmount === 0) {
-      await this.fillOrder(order, new Date());
-      this.emit('orderFilled', order, trades);
-    } else {
-      // Partial fill for market order
-      order.filledAmount = order.amount - remainingAmount;
-      order.remainingAmount = remainingAmount;
-      await order.save();
-      this.emit('orderPartiallyFilled', order, trades);
-    }
-
-    if (trades.length > 0) {
-      this.emit('tradesExecuted', trades);
-    }
-
-    return { trades, remainingOrder: remainingAmount > 0 ? order : undefined };
+  if (!this.orderBooks.has(pair)) {
+    this.orderBooks.set(pair, { bids: [], asks: [] });
   }
 
+  const book = this.orderBooks.get(pair)!;
+  const isMarketBuy = order.type === OrderType.MARKET_BUY;
+  const oppositeOrders = isMarketBuy ? book.asks : book.bids;
+
+  // Check if there are any valid opposite orders
+  if (oppositeOrders.length === 0) {
+    console.log(`⚠️ No opposite orders available for market ${isMarketBuy ? 'buy' : 'sell'} on ${pair}`);
+    order.status = OrderStatus.CANCELLED;
+    await order.save();
+    return { trades: [], remainingOrder: undefined };
+  }
+
+  while (oppositeOrders.length > 0 && remainingAmount > 0) {
+    const bestOpposite = oppositeOrders[0];
+    const tradeAmount = Math.min(remainingAmount, bestOpposite.amount);
+    
+    // 🔧 KRITIČNA ISPRAVKA: Use market order price as fallback if opposite order has no price
+    let tradePrice = bestOpposite.price;
+    
+    if (!tradePrice || isNaN(tradePrice) || tradePrice <= 0) {
+      console.log(`⚠️ Opposite order has invalid price (${tradePrice}), using market order price: ${order.price}`);
+      tradePrice = order.price;
+      
+      // If market order also has no price, skip this matching
+      if (!tradePrice || isNaN(tradePrice) || tradePrice <= 0) {
+        console.error(`❌ Both orders have invalid prices. Skipping match.`);
+        oppositeOrders.shift(); // Remove invalid opposite order
+        continue;
+      }
+    }
+
+    console.log(`💱 Market trade: ${tradeAmount} ${pair} @ ${tradePrice} (opposite: ${bestOpposite.price}, market: ${order.price})`);
+
+    // Create trade with validated price
+    const trade: TradeData = {
+      buyOrderId: isMarketBuy ? order._id.toString() : bestOpposite.orderId,
+      sellOrderId: isMarketBuy ? bestOpposite.orderId : order._id.toString(),
+      price: tradePrice, // ✅ Now guaranteed to be valid
+      amount: tradeAmount,
+      timestamp: new Date(),
+      pair: pair
+    };
+
+    trades.push(trade);
+    this.trades.push(trade);
+
+    // Save trade to database with blockchain execution
+    await this.executeTrade(trade, 
+      isMarketBuy ? order : bestOpposite.order,
+      isMarketBuy ? bestOpposite.order : order
+    );
+
+    // Update amounts
+    remainingAmount -= tradeAmount;
+    bestOpposite.amount -= tradeAmount;
+
+    // If opposite order is fully filled, remove and update database
+    if (bestOpposite.amount === 0) {
+      oppositeOrders.shift();
+      await this.fillOrder(bestOpposite.order, trade.timestamp);
+    }
+
+    console.log(`🤝 Trade executed: ${tradeAmount} ${pair} @ ${tradePrice}`);
+  }
+
+  // Update market order status
+  if (remainingAmount === 0) {
+    await this.fillOrder(order, new Date());
+    console.log(`✅ Order ${order.no} filled`);
+    this.emit('orderFilled', order, trades);
+  } else if (trades.length > 0) {
+    // Partial fill for market order
+    order.filledAmount = order.amount - remainingAmount;
+    order.remainingAmount = remainingAmount;
+    await order.save();
+    console.log(`⚡ Order ${order.no} partially filled: ${order.filledAmount}/${order.amount}`);
+    this.emit('orderPartiallyFilled', order, trades);
+  } else {
+    // No trades executed
+    console.log(`❌ Market order ${order.no} couldn't be executed`);
+    order.status = OrderStatus.CANCELLED;
+    await order.save();
+  }
+
+  if (trades.length > 0) {
+    console.log(`📈 ${trades.length} trades executed`);
+    this.emit('tradesExecuted', trades);
+  }
+
+  return { trades, remainingOrder: remainingAmount > 0 ? order : undefined };
+}
   /**
    * Process limit order
    */

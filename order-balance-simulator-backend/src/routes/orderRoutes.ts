@@ -77,7 +77,8 @@ const createOrderValidation = [
     .withMessage('Invalid wallet address')
 ];
 
-// ===== CREATE ORDER ROUTE =====
+// COMPLETE FIXED ROUTE - Replace the entire router.post section
+
 router.post('/', createOrderValidation, validateRequest, async (req: Request, res: Response) => {
   try {
     const orderData = req.body;
@@ -93,20 +94,16 @@ router.post('/', createOrderValidation, validateRequest, async (req: Request, re
     if (orderData.type.includes('Market')) type = 'market';
     if (orderData.type.includes('Limit')) type = 'limit';
 
-    // Handle price correctly for market orders
-    let price;
-    if (type === 'market') {
-      price = undefined;
-    } else {
-      price = Number(orderData.price);
-    }
+    // ✅ FIXED: Handle price correctly - preserve price for all order types
+    let price = orderData.price ? Number(orderData.price) : undefined;
+    console.log(`🔧 Processing ${orderData.type} with price: ${price}`);
 
     // Create the order object for database
     const formattedOrder = {
       pair: orderData.pair?.toUpperCase(),
       type: orderData.type,
       side,
-      price,
+      price: price, // ✅ Keep original price from frontend
       amount: Number(orderData.amount),
       walletAddress: orderData.walletAddress,
       orderTime: new Date(),

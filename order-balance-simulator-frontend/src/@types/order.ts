@@ -1,3 +1,5 @@
+// @types/order.ts - FIXED VERSION WITH MARKET ORDER SUPPORT
+
 // === ENUMS ===
 
 export enum OrderType {
@@ -34,12 +36,12 @@ export const orderStatusLabel = {
 
 // === BACKEND INTERFACES (API Response) ===
 
-// Backend order interface (što dobijate sa API-ja)
+// Backend order interface - FIXED to include Market types
 export interface IOrder {
     _id: string;
     no: number;
     pair: string;
-    type: 'Limit Sell' | 'Limit Buy';
+    type: 'Limit Sell' | 'Limit Buy' | 'Market Buy' | 'Market Sell'; // FIXED: Added Market types
     price: number;
     amount: number;
     total: number;
@@ -48,7 +50,7 @@ export interface IOrder {
     status: 'Filled' | 'Cancelled' | 'Pending';
     createdAt: string;
     updatedAt: string;
-    quantity?: number
+    quantity?: number; // Optional fallback for amount
 }
 
 // === FRONTEND INTERFACES ===
@@ -95,21 +97,22 @@ export interface IOrderAdd {
 // === API REQUEST/RESPONSE INTERFACES ===
 
 export interface CreateOrderRequest {
-    no: number;
     pair: string;
-    type: 'Limit Sell' | 'Limit Buy';
+    type: 'Limit Sell' | 'Limit Buy' | 'Market Buy' | 'Market Sell'; // FIXED: Added Market types
     price: number;
     amount: number;
     orderTime?: string;
     status?: 'Filled' | 'Cancelled' | 'Pending';
-    symbol?: number
-    quantity?: number
+    // Remove these - they shouldn't be in the request
+    // no: number; // Backend generates this
+    // symbol?: number; // This shouldn't be a number
+    // quantity?: number; // Use amount instead
 }
 
 export interface OrderFilters {
     pair?: string;
     status?: 'Filled' | 'Cancelled' | 'Pending';
-    type?: 'Limit Sell' | 'Limit Buy';
+    type?: 'Limit Sell' | 'Limit Buy' | 'Market Buy' | 'Market Sell'; // FIXED: Added Market types
     startDate?: string;
     endDate?: string;
     page?: number;
@@ -157,13 +160,17 @@ export interface OrderStatsResponse {
 
 // === HELPER FUNCTIONS ===
 
-// Konvertovanje backend string tipa u frontend enum
-export const convertBackendTypeToEnum = (backendType: 'Limit Sell' | 'Limit Buy'): OrderType => {
+// Konvertovanje backend string tipa u frontend enum - FIXED
+export const convertBackendTypeToEnum = (backendType: string): OrderType => {
     switch (backendType) {
         case 'Limit Sell':
             return OrderType.SellLimit;
         case 'Limit Buy':
             return OrderType.BuyLimit;
+        case 'Market Buy':
+            return OrderType.BuyMarket;
+        case 'Market Sell':
+            return OrderType.SellMarket;
         default:
             return OrderType.BuyLimit;
     }
@@ -183,13 +190,17 @@ export const convertBackendStatusToEnum = (backendStatus: 'Filled' | 'Cancelled'
     }
 };
 
-// Konvertovanje frontend enum tipa u backend string
-export const convertEnumTypeToBackend = (enumType: OrderType): 'Limit Sell' | 'Limit Buy' => {
+// Konvertovanje frontend enum tipa u backend string - FIXED
+export const convertEnumTypeToBackend = (enumType: OrderType): string => {
     switch (enumType) {
         case OrderType.SellLimit:
             return 'Limit Sell';
         case OrderType.BuyLimit:
             return 'Limit Buy';
+        case OrderType.BuyMarket:
+            return 'Market Buy';
+        case OrderType.SellMarket:
+            return 'Market Sell';
         default:
             return 'Limit Buy';
     }
