@@ -107,6 +107,9 @@ export interface CreateOrderRequest {
     // no: number; // Backend generates this
     // symbol?: number; // This shouldn't be a number
     // quantity?: number; // Use amount instead
+    symbol?: string;
+    quantity?: number;
+    total?: number;
 }
 
 export interface OrderFilters {

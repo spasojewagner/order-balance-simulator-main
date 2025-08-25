@@ -129,54 +129,69 @@ function App() {
         return price > 0 && quantity > 0 && quantity <= balance1;
     };
 
-    const addOrder = async ({ type, symbol, price, quantity, total, status }: any) => {
-        try {
-            console.log('🚀 Frontend order data:', { type, symbol, price, quantity, total, status });
+   const addOrder = async ({ type, symbol, price, quantity, total, status }: {
+    type: OrderType;
+    symbol: string;
+    price: number;
+    quantity: number;
+    total: number;
+    status: OrderStatus;
+}) => {
+    try {
+        console.log('🚀 Frontend order data:', { type, symbol, price, quantity, total, status });
 
-            // Konvertuj symbol u BASE/USDT format za backend
-            const baseCoin = currentSymbol.coinA || 'ETH';
-            const backendSymbol = `${baseCoin.toUpperCase()}/USDT`;
+        // Konvertuj symbol u BASE/USDT format za backend
+        const baseCoin = currentSymbol.coinA || 'ETH';
+        const backendSymbol = `${baseCoin.toUpperCase()}/USDT`;
 
-            // Mapiraj frontend → backend format
-            const backendOrderData = {
-                pair: backendSymbol, // uvek BASE/USDT
-                type: getBackendOrderType(type),
-                price: Number(price),
-                amount: Number(quantity),
-                status: getBackendOrderStatus(status)
-            };
+        // Fix za market ordere - koristi trenutnu cenu
+        const finalPrice = (type === OrderType.BuyMarket || type === OrderType.SellMarket) && price === 0 
+            ? currentSymbolPrice 
+            : price;
 
-            console.log('🚀 Sending to backend:', backendOrderData);
+        // Mapiraj frontend → backend format sa pravilnim tipovima
+        const backendOrderData: {
+            pair: string;
+            type: string;
+            price: number;
+            amount: number;
+            status?: string;
+        } = {
+            pair: backendSymbol,
+            type: getBackendOrderType(type),
+            price: Number(finalPrice),
+            amount: Number(quantity),
+            status: getBackendOrderStatus(status)
+        };
 
-            // Pošalji na backend
-            await dispatch(createOrder(backendOrderData)).unwrap();
+        console.log('🚀 Sending to backend:', backendOrderData);
 
-            // Toast za market ordere
-            if (type === OrderType.BuyMarket || type === OrderType.SellMarket) {
-                toast.success("Successfully Filled!", { position: "top-center" });
+        // Pošalji na backend
+        await dispatch(createOrder(backendOrderData as any)).unwrap();
 
-            } else {
-                toast.success("Order placed successfully!", { position: "top-center" });
-            }
-
-            // Refresh orders
-            dispatch(fetchOrders());
-
-        } catch (error: any) {
-            console.error('❌ Failed to create order:', error);
-
-            // Detaljniji error handling
-            let errorMessage = "Failed to create order!";
-            if (error?.message) {
-                errorMessage = error.message;
-            } else if (error?.response?.data?.message) {
-                errorMessage = error.response.data.message;
-            }
-
-            toast.error(errorMessage, { position: "top-center" });
+        // Toast za market ordere
+        if (type === OrderType.BuyMarket || type === OrderType.SellMarket) {
+            toast.success("Market Order Executed!", { position: "top-center" });
+        } else {
+            toast.success("Order placed successfully!", { position: "top-center" });
         }
-    };
 
+        // Refresh orders
+        dispatch(fetchOrders());
+
+    } catch (error: any) {
+        console.error('❌ Failed to create order:', error);
+
+        let errorMessage = "Failed to create order!";
+        if (error?.message) {
+            errorMessage = error.message;
+        } else if (error?.response?.data?.message) {
+            errorMessage = error.response.data.message;
+        }
+
+        toast.error(errorMessage, { position: "top-center" });
+    }
+};
     const handleCancelOrder = async (id: string) => {
         try {
             await dispatch(cancelOrder(id)).unwrap();

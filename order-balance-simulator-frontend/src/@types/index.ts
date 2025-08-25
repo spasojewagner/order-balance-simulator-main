@@ -29,6 +29,8 @@ export interface ISymbol {
     atl_date?: string;         // ATL date
     last_updated?: string;     // Last update timestamp
     price?: number
+    tokenAAddress?: string
+    tokenBAddress?: string
 }
 // Order related types
 export interface IOrder {
